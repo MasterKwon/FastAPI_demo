@@ -4,7 +4,8 @@
 
 from fastapi import HTTPException
 from psycopg2 import Error as PostgresError
-from app.utils.logger import log_error
+from app.utils.logger import app_logger, LogType
+import logging
 
 class DatabaseError(Exception):
     """데이터베이스 관련 기본 예외 클래스"""
@@ -27,7 +28,24 @@ def handle_database_error(e: Exception, query: str = None, params: dict = None) 
         HTTPException: HTTP 500 에러
     """
     # 예외 로깅
-    log_error(e, query, params)
+    app_logger.log(
+        logging.ERROR,
+        f"데이터베이스 오류: {str(e)}",
+        log_type=LogType.ALL
+    )
+    
+    if query:
+        app_logger.log(
+            logging.ERROR,
+            f"실패한 쿼리: {query}",
+            log_type=LogType.ALL
+        )
+        if params:
+            app_logger.log(
+                logging.ERROR,
+                f"쿼리 파라미터: {params}",
+                log_type=LogType.ALL
+            )
     
     # HTTP 예외 발생
     if isinstance(e, PostgresError):

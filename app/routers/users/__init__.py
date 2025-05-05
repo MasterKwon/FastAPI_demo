@@ -1,6 +1,6 @@
 """
-Users API Router
+사용자 관련 라우터 모듈
 """
 
-from .router import router
-from . import queries 
+from .user_router import router
+from . import user_queries 

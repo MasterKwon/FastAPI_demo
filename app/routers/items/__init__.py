@@ -1,6 +1,6 @@
 """
-Items API Router
+상품 관련 라우터 모듈
 """
 
-from .router import router
-from . import queries 
+from .item_router import router
+from . import item_queries 

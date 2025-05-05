@@ -20,7 +20,7 @@ pip install -r requirements.txt
 
 서버 실행:
 ```bash
-uvicorn main:app --reload
+uvicorn app.main:app --port 9123 --reload
 ```
 
 서버가 실행되면 다음 URL에서 API 문서를 확인할 수 있습니다:

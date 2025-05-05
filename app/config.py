@@ -1,10 +1,11 @@
 """
 설정 모듈
 """
-from pydantic_settings import BaseSettings
+from pydantic import BaseSettings
 from typing import Optional
 import os
 from pathlib import Path
+import secrets
 
 class Settings(BaseSettings):
     # 데이터베이스 설정
@@ -16,11 +17,15 @@ class Settings(BaseSettings):
     DB_PASSWORD: str
     
     # 데이터베이스 연결 풀 설정
-    DB_MIN_CONN: int = 1
-    DB_MAX_CONN: int = 10
+    DB_MIN_CONN: int = 2
+    DB_MAX_CONN: int = 10  # CPU 코어 수에 따라 조정
+    
+    # 연결 타임아웃 설정 추가
+    DB_CONNECT_TIMEOUT: int = 30  # 초 단위
+    DB_POOL_TIMEOUT: int = 30  # 초 단위
     
     # JWT 설정
-    SECRET_KEY: str
+    SECRET_KEY: str = secrets.token_urlsafe(32)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     

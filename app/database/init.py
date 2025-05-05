@@ -3,12 +3,22 @@
 """
 
 import logging
+import os
+from pathlib import Path
 from app.database.connection import get_db_connection
-from app.database.schemas import CREATE_ITEMS_TABLE, CREATE_USERS_TABLE
 from app.config import settings
 
 # 로거 설정
 logger = logging.getLogger(__name__)
+
+def read_sql_file(file_path: str) -> str:
+    """SQL 파일을 읽어서 내용을 반환합니다."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"SQL 파일 읽기 실패: {e}")
+        raise
 
 def init_db():
     """
@@ -17,18 +27,18 @@ def init_db():
     try:
         logger.info("데이터베이스 초기화 시작")
         
+        # 스키마 파일 경로
+        schema_dir = Path(__file__).parent / "schemas"
+        
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # Users 테이블 생성
-            logger.info("Users 테이블 생성 시도")
-            cursor.execute(CREATE_USERS_TABLE)
-            logger.info("Users 테이블 생성 완료")
-            
-            # Items 테이블 생성
-            logger.info("Items 테이블 생성 시도")
-            cursor.execute(CREATE_ITEMS_TABLE)
-            logger.info("Items 테이블 생성 완료")
+            # 스키마 파일 실행
+            for schema_file in schema_dir.glob("*.sql"):
+                logger.info(f"{schema_file.name} 스키마 실행 시도")
+                sql_content = read_sql_file(schema_file)
+                cursor.execute(sql_content)
+                logger.info(f"{schema_file.name} 스키마 실행 완료")
             
             # 변경사항 커밋
             logger.info("변경사항 커밋 시도")

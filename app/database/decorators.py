@@ -3,7 +3,8 @@
 """
 from functools import wraps
 from app.database.exceptions import DatabaseError
-from app.utils.logger import logger
+from app.utils.logger import app_logger, LogType
+import logging
 
 def with_transaction(func):
     """
@@ -27,6 +28,10 @@ def with_transaction(func):
             return result
         except Exception as e:
             db.rollback()
-            logger.error(f"트랜잭션 실패: {str(e)}")
+            app_logger.log(
+                logging.ERROR,
+                f"트랜잭션 실패: {str(e)}",
+                log_type=LogType.ALL
+            )
             raise DatabaseError(f"트랜잭션 실패: {str(e)}")
     return wrapper 

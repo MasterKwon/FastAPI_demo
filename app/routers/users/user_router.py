@@ -1,0 +1,623 @@
+"""
+사용자 관련 라우터
+"""
+from fastapi import APIRouter, HTTPException, Depends, status, Path, Query, UploadFile, File, Form
+from typing import List, Optional
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from pydantic import EmailStr
+from app.database.pool import get_db
+from app.utils.logger import log_query, setup_logger, app_logger, LogType
+from app.database.exceptions import handle_database_error
+from .user_queries import (
+    INSERT_USER, SELECT_USER_BY_ID, SELECT_USER_FOR_LOGIN, 
+    SELECT_ALL_USERS, SELECT_USER_BY_USERNAME, SEARCH_USERS_TEMPLATE,
+    UPDATE_USER, DELETE_USER, UPDATE_PASSWORD, SELECT_USER_BY_EMAIL,
+    SELECT_USER_COUNT
+)
+from app.models.users import (
+    UserCreate, UserResponse, UserUpdate, UserLogin, UsersResponse,
+    UserSortColumn, SortDirection
+)
+from enum import Enum
+import logging
+from datetime import datetime
+from app.utils.password import get_password_hash, verify_password
+import json
+import pandas as pd
+import os
+import uuid
+from app.config import settings
+from app.utils.decorators import log_operation, log_database_operation
+from io import BytesIO
+import time
+    
+# 로거 설정
+logger = setup_logger(__name__)
+
+router = APIRouter(
+    prefix="/users",
+    tags=["users"],
+    responses={404: {"description": "Not found"}},
+)
+
+@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@log_operation(log_type=LogType.ALL)
+async def create_user(
+    user: UserCreate,
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    새로운 사용자를 생성합니다.
+    
+    Args:
+        user: 생성할 사용자 정보
+        
+    Returns:
+        생성된 사용자 정보
+        
+    Raises:
+        HTTPException: 
+            - 400: 이메일이 이미 등록된 경우
+            - 500: 데이터베이스 오류 발생 시
+    """
+    try:
+        cursor = db.cursor()
+        
+        # 이메일 중복 체크
+        cursor.execute(
+            SELECT_USER_BY_EMAIL,
+            {"email": user.email}
+        )
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이미 등록된 이메일입니다."
+            )
+        
+        # 사용자명 중복 체크
+        cursor.execute(
+            SELECT_USER_BY_USERNAME,
+            {"username": user.username}
+        )
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이미 등록된 사용자명입니다."
+            )
+        
+        # 비밀번호 해시화
+        hashed_password = get_password_hash(user.password)
+        
+        # 사용자 정보 저장
+        cursor.execute(
+            INSERT_USER,
+            {
+                "username": user.username,
+                "email": user.email,
+                "hashed_password": hashed_password,
+                "is_active": True,
+                "created_at": datetime.now()
+            }
+        )
+        result = cursor.fetchone()
+        
+        db.commit()
+        
+        app_logger.log(
+            logging.INFO,
+            f"사용자 생성 성공: {result['id']}",
+            log_type=LogType.ALL
+        )
+        
+        return result
+        
+    except Exception as e:
+        db.rollback()
+        app_logger.log(
+            logging.ERROR,
+            f"사용자 생성 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/", response_model=UsersResponse)
+@log_operation(log_type=LogType.ALL)
+async def read_users(
+    skip: int = Query(0, ge=0, description="건너뛸 레코드 수"),
+    limit: int = Query(10, ge=1, le=100, description="반환할 최대 레코드 수"),
+    sort_by: str = Query("created_at", description="정렬 기준 컬럼"),
+    sort_direction: str = Query("desc", description="정렬 방향 (asc/desc)"),
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    모든 사용자 목록을 조회합니다.
+    
+    Args:
+        skip: 건너뛸 레코드 수 (기본값: 0)
+        limit: 반환할 최대 레코드 수 (기본값: 10)
+        
+    Returns:
+        사용자 목록
+        
+    Raises:
+        HTTPException: 500 - 데이터베이스 오류 발생 시
+    """
+    try:
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            # 전체 사용자 수 조회
+            cursor.execute(SELECT_USER_COUNT)
+            total = cursor.fetchone()["count"]
+            
+            # 사용자 목록 조회
+            cursor.execute(
+                SELECT_ALL_USERS.format(
+                    sort_column=sort_by,
+                    sort_direction=sort_direction
+                ),
+                (limit, skip)
+            )
+            users = cursor.fetchall()
+            
+            return {
+                "users": users,
+                "total": total,
+                "skip": skip,
+                "limit": limit
+            }
+            
+    except Exception as e:
+        logger.error(f"사용자 목록 조회 실패: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.get("/{user_id}", response_model=UserResponse)
+@log_operation(log_type=LogType.ALL)
+async def read_user(
+    user_id: int = Path(..., ge=1, description="사용자 ID"),
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    특정 사용자를 조회합니다.
+    
+    Args:
+        user_id: 조회할 사용자 ID
+        
+    Returns:
+        사용자 정보
+        
+    Raises:
+        HTTPException:
+            - 404: 사용자를 찾을 수 없는 경우
+            - 500: 데이터베이스 오류 발생 시
+    """
+    try:
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                SELECT_USER_BY_ID,
+                {"user_id": user_id}
+            )
+            result = cursor.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+            
+            return result
+    except Exception as e:
+        app_logger.log(
+            logging.ERROR,
+            f"사용자 조회 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/email/{email}", response_model=UserResponse)
+@log_operation(log_type=LogType.ALL)
+async def read_user_by_email(
+    email: EmailStr,
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    특정 이메일로 사용자를 조회합니다.
+    
+    Args:
+        email: 조회할 이메일
+        
+    Returns:
+        사용자 정보
+        
+    Raises:
+        HTTPException:
+            - 404: 사용자를 찾을 수 없는 경우
+            - 500: 데이터베이스 오류 발생 시
+    """
+    try:
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            params = {"email": email}
+            log_query(cursor, SELECT_USER_BY_EMAIL, params)
+            cursor.execute(SELECT_USER_BY_EMAIL, params)
+            result = cursor.fetchone()
+            if result is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+            return result
+    except Exception as e:
+        app_logger.log(
+            logging.ERROR,
+            f"사용자 조회 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.get("/search/", response_model=List[UserResponse])
+@log_operation(log_type=LogType.ALL)
+async def search_users(
+    username: Optional[str] = None,
+    email: Optional[EmailStr] = None,
+    skip: int = Query(0, ge=0, description="건너뛸 레코드 수"),
+    limit: int = Query(10, ge=1, le=100, description="반환할 최대 레코드 수"),
+    sort_by: str = Query("created_at", description="정렬 기준 컬럼"),
+    sort_direction: str = Query("desc", description="정렬 방향 (asc/desc)"),
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    사용자를 검색합니다.
+    
+    Args:
+        username: 검색할 사용자명 (부분 일치)
+        email: 검색할 이메일 (부분 일치)
+        skip: 건너뛸 레코드 수 (기본값: 0)
+        limit: 반환할 최대 레코드 수 (기본값: 10)
+        
+    Returns:
+        검색된 사용자 목록
+    """
+    try:
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            # 동적 쿼리 생성
+            where_clauses = []
+            params = {"limit": limit, "offset": skip}
+            
+            if username is not None:
+                where_clauses.append("username LIKE %(username)s")
+                params["username"] = f"%{username}%"
+            
+            if email is not None:
+                where_clauses.append("email LIKE %(email)s")
+                params["email"] = f"%{email}%"
+            
+            # WHERE 절 구성
+            where_clause = " AND ".join(where_clauses)
+            
+            # 쿼리 실행
+            cursor.execute(
+                SEARCH_USERS_TEMPLATE.format(
+                    where_condition=f"WHERE {where_clause}" if where_clause else ""
+                ),
+                params
+            )
+            return cursor.fetchall()
+            
+    except Exception as e:
+        app_logger.log(
+            logging.ERROR,
+            f"사용자 검색 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.put("/{user_id}", response_model=UserResponse)
+@log_operation(log_type=LogType.ALL)
+async def update_user(
+    user_id: int,
+    user: UserUpdate,
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    사용자 정보를 업데이트합니다.
+    """
+    try:
+        cursor = db.cursor()
+        
+        # 기존 사용자 정보 조회
+        cursor.execute(
+            SELECT_USER_BY_ID,
+            {"user_id": user_id}
+        )
+        existing_user = cursor.fetchone()
+        
+        if not existing_user:
+            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+        
+        # 사용자 정보 업데이트
+        update_fields = []
+        update_values = []
+        
+        if user.username is not None:
+            # 사용자명 중복 체크
+            cursor.execute(
+                SELECT_USER_BY_USERNAME,
+                {"username": user.username}
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 사용 중인 사용자명입니다."
+                )
+            update_fields.append("username = %s")
+            update_values.append(user.username)
+            
+        if user.email is not None:
+            # 이메일 중복 체크
+            cursor.execute(
+                SELECT_USER_BY_EMAIL,
+                {"email": user.email}
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 사용 중인 이메일입니다."
+                )
+            update_fields.append("email = %s")
+            update_values.append(user.email)
+            
+        if user.is_active is not None:
+            update_fields.append("is_active = %s")
+            update_values.append(user.is_active)
+            
+        # 비밀번호 업데이트가 필요한 경우
+        if user.password is not None:
+            hashed_password = get_password_hash(user.password)
+            cursor.execute(
+                UPDATE_PASSWORD,
+                {
+                    "hashed_password": hashed_password,
+                    "user_id": user_id
+                }
+            )
+            
+        if update_fields:
+            update_values.append(user_id)
+            cursor.execute(
+                UPDATE_USER.format(
+                    update_fields=", ".join(update_fields)
+                ),
+                update_values
+            )
+            result = cursor.fetchone()
+        else:
+            result = existing_user
+        
+        db.commit()
+        
+        app_logger.log(
+            logging.INFO,
+            f"사용자 업데이트 성공: {user_id}",
+            log_type=LogType.ALL
+        )
+        
+        return result
+        
+    except Exception as e:
+        db.rollback()
+        app_logger.log(
+            logging.ERROR,
+            f"사용자 업데이트 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/{user_id}")
+@log_operation(log_type=LogType.ALL)
+async def delete_user(
+    user_id: int,
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    사용자를 삭제합니다.
+    """
+    try:
+        cursor = db.cursor()
+        
+        # 사용자 존재 여부 확인
+        cursor.execute(
+            SELECT_USER_BY_ID,
+            {"user_id": user_id}
+        )
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+        
+        # 사용자 삭제
+        cursor.execute(
+            DELETE_USER,
+            {"user_id": user_id}
+        )
+        
+        db.commit()
+        
+        app_logger.log(
+            logging.INFO,
+            f"사용자 삭제 성공: {user_id}",
+            log_type=LogType.ALL
+        )
+        
+        return {"message": "사용자가 성공적으로 삭제되었습니다."}
+        
+    except Exception as e:
+        db.rollback()
+        app_logger.log(
+            logging.ERROR,
+            f"사용자 삭제 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/login")
+@log_operation(log_type=LogType.ALL)
+async def login(
+    user: UserLogin,
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    사용자 로그인
+    
+    Args:
+        user: 로그인 정보
+        db: 데이터베이스 연결
+    
+    Returns:
+        dict: 사용자 정보
+    
+    Raises:
+        HTTPException: 로그인 실패 시
+    """
+    try:
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            # 사용자 조회
+            cursor.execute(
+                SELECT_USER_FOR_LOGIN,
+                {"email": user.email}
+            )
+            user_data = cursor.fetchone()
+            
+            if not user_data:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="이메일 또는 비밀번호가 올바르지 않습니다"
+                )
+            
+            # 계정 비활성화 상태 확인
+            if not user_data["is_active"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="비활성화된 계정입니다"
+                )
+            
+            # 비밀번호 검증
+            if not verify_password(user.password, user_data["hashed_password"]):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="이메일 또는 비밀번호가 올바르지 않습니다"
+                )
+            
+            return user_data
+            
+    except HTTPException as e:
+        logger.error(f"로그인 실패: {str(e)}")
+        raise e
+    except Exception as e:
+        logger.error(f"로그인 중 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post("/bulk-upload", response_model=List[UserResponse])
+@log_operation(log_type=LogType.ALL)
+async def bulk_upload_users(
+    file: UploadFile = File(...),
+    db: psycopg2.extensions.connection = Depends(get_db)
+):
+    """
+    엑셀 파일을 이용한 사용자 일괄 등록
+    
+    Args:
+        file: 업로드할 엑셀 파일
+        db: 데이터베이스 연결
+    
+    Returns:
+        List[UserResponse]: 등록된 사용자 목록
+    """
+    try:
+        # 엑셀 파일 처리
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents), header=0)
+        
+        # 필수 컬럼 확인
+        required_columns = ['username', 'email', 'password']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"필수 컬럼이 누락되었습니다: {', '.join(missing_columns)}"
+            )
+        
+        # 데이터 유효성 검사
+        if df['email'].duplicated().any():
+            raise HTTPException(
+                status_code=400,
+                detail="중복된 이메일이 있습니다."
+            )
+        
+        if df['username'].duplicated().any():
+            raise HTTPException(
+                status_code=400,
+                detail="중복된 사용자명이 있습니다."
+            )
+        
+        # 데이터베이스에 일괄 등록
+        cursor = db.cursor()
+        created_users = []
+        for _, row in df.iterrows():
+            # 이메일 중복 확인
+            cursor.execute(
+                SELECT_USER_BY_EMAIL,
+                {"email": row['email']}
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 등록된 이메일입니다: {row['email']}"
+                )
+            
+            # 사용자명 중복 확인
+            cursor.execute(
+                SELECT_USER_BY_USERNAME,
+                {"username": row['username']}
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 등록된 사용자명입니다: {row['username']}"
+                )
+            
+            # 비밀번호 해시화
+            hashed_password = get_password_hash(row['password'])
+            
+            # 사용자 생성
+            cursor.execute(
+                INSERT_USER,
+                {
+                    "username": row['username'],
+                    "email": row['email'],
+                    "hashed_password": hashed_password,
+                    "is_active": True,
+                    "created_at": datetime.now()
+                }
+            )
+            user = cursor.fetchone()
+            created_users.append(user)
+        
+        db.commit()
+        
+        logger.info(f"사용자 일괄 등록 성공: {len(created_users)}명")
+        return created_users
+        
+    except HTTPException as e:
+        logger.error(f"사용자 일괄 등록 실패: {str(e)}")
+        raise e
+    except Exception as e:
+        logger.error(f"사용자 일괄 등록 중 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"사용자 일괄 등록 중 오류가 발생했습니다: {str(e)}"
+        ) 

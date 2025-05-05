@@ -3,6 +3,8 @@
 """
 from psycopg2 import pool
 from app.config import settings
+from fastapi import Depends
+import psycopg2
 
 class DatabasePool:
     """데이터베이스 연결 풀 클래스"""
@@ -23,7 +25,13 @@ class DatabasePool:
                 port=settings.DB_PORT,
                 database=settings.DB_NAME,
                 user=settings.DB_USER,
-                password=settings.DB_PASSWORD
+                password=settings.DB_PASSWORD,
+                connect_timeout=settings.DB_CONNECT_TIMEOUT,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+                options=f"-c search_path={settings.DB_SCHEMA}"
             )
 
     def get_connection(self):
@@ -41,4 +49,14 @@ class DatabasePool:
             self._pool = None
 
 # 싱글톤 인스턴스 생성
-db_pool = DatabasePool() 
+db_pool = DatabasePool()
+
+async def get_db():
+    """
+    FastAPI 의존성 주입을 위한 데이터베이스 연결 반환 함수
+    """
+    db = db_pool.get_connection()
+    try:
+        yield db
+    finally:
+        db_pool.put_connection(db) 
