@@ -1,7 +1,7 @@
 """
 설정 모듈
 """
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from typing import Optional
 import os
 from pathlib import Path

@@ -6,9 +6,10 @@
 
 1. 가상환경 생성 및 활성화:
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+python -m venv masterkwon
+source masterkwon/bin/activate  # Linux/Mac
+masterkwon\Scripts\activate     # Windows
+ctrl + shift + P > select Interpreter > 생성한 가상환경 선택
 ```
 
 2. 필요한 패키지 설치:
@@ -24,8 +25,8 @@ uvicorn app.main:app --port 9123 --reload
 ```
 
 서버가 실행되면 다음 URL에서 API 문서를 확인할 수 있습니다:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- Swagger UI: http://localhost:9123/docs
+- ReDoc: http://localhost:9123/redoc
 
 ## API 엔드포인트
 
