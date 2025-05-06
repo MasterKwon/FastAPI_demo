@@ -11,8 +11,8 @@ from app.database.pool import get_db
 from app.utils.logger import logger, app_logger, log_operation, log_query, LogType
 from app.services.bulk_upload import validate_excel_data, ExcelValidationError
 from .item_queries import (
-    INSERT_ITEM, SELECT_ALL_ITEMS, SELECT_ITEM_BY_ID, BULK_INSERT_ITEMS,
-    UPDATE_ITEM, DELETE_ITEM, ImageQueries, SELECT_ITEM_COUNT, SEARCH_ITEMS_TEMPLATE
+    INSERT_ITEM, SELECT_ITEM_BY_ID, BULK_INSERT_ITEMS,
+    UPDATE_ITEM, DELETE_ITEM, ImageQueries, SEARCH_ITEMS_TEMPLATE
 )
 from app.database.schemas import CREATE_ALL_TABLES
 from app.models.item import ItemCreate, ItemResponse, ItemImage
@@ -566,8 +566,8 @@ async def read_item(
                 raise HTTPException(status_code=404, detail="상품을 찾을 수 없습니다.")
             
             # 이미지 정보 조회
-            cursor.execute(SELECT_ITEM_IMGS, {"item_id": item_id})
-            result["images"] = cursor.fetchall()
+            cursor.execute(ImageQueries.SELECT_BY_ITEM, {"item_id": item_id})
+            images = cursor.fetchall()
             
             return result
     except Exception as e:
@@ -657,7 +657,7 @@ async def delete_item_image(
     try:
         with db.cursor(cursor_factory=RealDictCursor) as cursor:
             # 이미지 정보 조회
-            cursor.execute(ImageQueries.SELECT_IMAGE_DETAILS, {"img_id": img_id})
+            cursor.execute(ImageQueries.SELECT_BY_ITEM, {"item_id": item_id})
             result = cursor.fetchone()
             if not result:
                 raise HTTPException(status_code=404, detail="이미지를 찾을 수 없습니다.")
@@ -736,7 +736,7 @@ async def update_item(
         # 이미지 업데이트
         if image:
             # 기존 이미지 정보 조회
-            cursor.execute(ImageQueries.SELECT_IMAGE_DETAILS, {"item_id": item_id})
+            cursor.execute(ImageQueries.SELECT_BY_ITEM, {"item_id": item_id})
             existing_image = cursor.fetchone()
             
             # 새 이미지 저장

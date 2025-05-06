@@ -11,13 +11,13 @@ from app.utils.logger import log_query, setup_logger, app_logger, LogType
 from app.database.exceptions import handle_database_error
 from .user_queries import (
     INSERT_USER, SELECT_USER_BY_ID, SELECT_USER_FOR_LOGIN, 
-    SELECT_ALL_USERS, SELECT_USER_BY_USERNAME, SEARCH_USERS_TEMPLATE,
+    SELECT_USER_BY_USERNAME, SEARCH_USERS_TEMPLATE,
     UPDATE_USER, DELETE_USER, UPDATE_PASSWORD, SELECT_USER_BY_EMAIL,
     SELECT_USER_COUNT
 )
 from app.models.users import (
     UserCreate, UserResponse, UserUpdate, UserLogin, UsersResponse,
-    UserSortColumn, SortDirection
+    UserSortColumn, SortDirection, BulkUploadResponse
 )
 from enum import Enum
 import logging
@@ -31,6 +31,7 @@ from app.config import settings
 from app.utils.decorators import log_operation, log_database_operation
 from io import BytesIO
 import time
+import re
     
 # 로거 설정
 logger = setup_logger(__name__)
@@ -136,28 +137,32 @@ async def read_users(
     Args:
         skip: 건너뛸 레코드 수 (기본값: 0)
         limit: 반환할 최대 레코드 수 (기본값: 10)
+        sort_by: 정렬 기준 컬럼 (기본값: created_at)
+        sort_direction: 정렬 방향 (기본값: desc)
         
     Returns:
-        사용자 목록
+        사용자 목록과 페이지네이션 정보
         
     Raises:
         HTTPException: 500 - 데이터베이스 오류 발생 시
     """
     try:
         with db.cursor(cursor_factory=RealDictCursor) as cursor:
-            # 전체 사용자 수 조회
-            cursor.execute(SELECT_USER_COUNT)
-            total = cursor.fetchone()["count"]
-            
             # 사용자 목록 조회
-            cursor.execute(
-                SELECT_ALL_USERS.format(
-                    sort_column=sort_by,
-                    sort_direction=sort_direction
-                ),
-                (limit, skip)
+            query = SEARCH_USERS_TEMPLATE.format(
+                where_condition="",
+                sort_column=sort_by,
+                sort_direction=sort_direction
             )
+            cursor.execute(query, {"limit": limit, "offset": skip})
             users = cursor.fetchall()
+            
+            # 첫 번째 레코드에서 total_count 추출
+            total = users[0]["total_count"] if users else 0
+            
+            # total_count 필드 제거
+            for user in users:
+                user.pop("total_count", None)
             
             return {
                 "users": users,
@@ -293,16 +298,30 @@ async def search_users(
                 params["email"] = f"%{email}%"
             
             # WHERE 절 구성
-            where_clause = " AND ".join(where_clauses)
+            where_condition = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             
-            # 쿼리 실행
-            cursor.execute(
-                SEARCH_USERS_TEMPLATE.format(
-                    where_condition=f"WHERE {where_clause}" if where_clause else ""
-                ),
-                params
+            # 사용자 목록 조회
+            query = SEARCH_USERS_TEMPLATE.format(
+                where_condition=where_condition,
+                sort_column=sort_by,
+                sort_direction=sort_direction
             )
-            return cursor.fetchall()
+            cursor.execute(query, params)
+            users = cursor.fetchall()
+            
+            # 첫 번째 레코드에서 total_count 추출
+            total = users[0]["total_count"] if users else 0
+            
+            # total_count 필드 제거
+            for user in users:
+                user.pop("total_count", None)
+            
+            return {
+                "users": users,
+                "total": total,
+                "skip": skip,
+                "limit": limit
+            }
             
     except Exception as e:
         app_logger.log(
@@ -521,7 +540,7 @@ async def login(
             detail=str(e)
         )
 
-@router.post("/bulk-upload", response_model=List[UserResponse])
+@router.post("/bulk-upload", response_model=BulkUploadResponse)
 @log_operation(log_type=LogType.ALL)
 async def bulk_upload_users(
     file: UploadFile = File(...),
@@ -535,89 +554,173 @@ async def bulk_upload_users(
         db: 데이터베이스 연결
     
     Returns:
-        List[UserResponse]: 등록된 사용자 목록
+        BulkUploadResponse: 일괄 등록 결과
     """
     try:
         # 엑셀 파일 처리
         contents = await file.read()
         df = pd.read_excel(BytesIO(contents), header=0)
         
-        # 필수 컬럼 확인
-        required_columns = ['username', 'email', 'password']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
+        # 데이터프레임 기본 정보 로깅
+        logger.info(f"[엑셀 파일] 컬럼: {df.columns.tolist()}, 행 수: {len(df)}")
+        
+        # 필수 컬럼 수 확인
+        if len(df.columns) < 3:
             raise HTTPException(
-                status_code=400,
-                detail=f"필수 컬럼이 누락되었습니다: {', '.join(missing_columns)}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="필수 컬럼이 부족합니다. 사용자명, 이메일, 비밀번호 순서로 입력해주세요."
             )
         
-        # 데이터 유효성 검사
-        if df['email'].duplicated().any():
+        # 컬럼 순서로 데이터 추출 및 중복 체크
+        try:
+            usernames = df.iloc[:, 0].astype(str).str.strip()
+            emails = df.iloc[:, 1].astype(str).str.strip()
+            
+            # 중복 체크
+            if emails.duplicated().any():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="중복된 이메일이 있습니다."
+                )
+            
+            if usernames.duplicated().any():
+                raise HTTPException(
+                    status_code=400,
+                    detail="중복된 사용자명이 있습니다."
+                )
+            
+        except Exception as e:
+            logger.error(f"[데이터 검증] 오류: {str(e)}")
             raise HTTPException(
-                status_code=400,
-                detail="중복된 이메일이 있습니다."
-            )
-        
-        if df['username'].duplicated().any():
-            raise HTTPException(
-                status_code=400,
-                detail="중복된 사용자명이 있습니다."
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"데이터 검증 중 오류가 발생했습니다: {str(e)}"
             )
         
         # 데이터베이스에 일괄 등록
         cursor = db.cursor()
         created_users = []
-        for _, row in df.iterrows():
-            # 이메일 중복 확인
-            cursor.execute(
-                SELECT_USER_BY_EMAIL,
-                {"email": row['email']}
-            )
-            if cursor.fetchone():
+        failed_items = []
+        
+        try:
+            for idx, row in df.iterrows():
+                try:
+                    # 데이터 추출
+                    username = str(row.iloc[0]).strip() if not pd.isna(row.iloc[0]) else ""
+                    email = str(row.iloc[1]).strip() if not pd.isna(row.iloc[1]) else ""
+                    password = str(row.iloc[2]).strip() if not pd.isna(row.iloc[2]) else ""
+                    
+                    # logger.info(f"[행 {idx + 2}] 처리 시작 - 사용자명: {username}, 이메일: {email}")
+                    
+                    # 필수 값 검증
+                    if not username:
+                        raise ValueError("사용자명은 필수입니다")
+                    if not email:
+                        raise ValueError("이메일은 필수입니다")
+                    if not password:
+                        raise ValueError("비밀번호는 필수입니다")
+                    
+                    # 이메일 형식 검증
+                    if not "@" in email or not "." in email:
+                        raise ValueError(f"유효하지 않은 이메일 형식입니다: {email}")
+                    
+                    # 한글 이메일 차단
+                    if any('\uAC00' <= char <= '\uD7A3' for char in email):
+                        raise ValueError(f"한글이 포함된 이메일은 사용할 수 없습니다: {email}")
+                    
+                    # 이메일 형식 추가 검증
+                    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+                        raise ValueError(f"올바른 이메일 형식이 아닙니다: {email}")
+                    
+                    # 비밀번호 길이 검증
+                    if len(password) < 8:
+                        raise ValueError("비밀번호는 8자 이상이어야 합니다")
+                    
+                    # 이메일 중복 확인
+                    cursor.execute(
+                        SELECT_USER_BY_EMAIL,
+                        {"email": email}
+                    )
+                    if cursor.fetchone():
+                        raise ValueError(f"이미 등록된 이메일입니다: {email}")
+                    
+                    # 사용자명 중복 확인
+                    cursor.execute(
+                        SELECT_USER_BY_USERNAME,
+                        {"username": username}
+                    )
+                    if cursor.fetchone():
+                        raise ValueError(f"이미 등록된 사용자명입니다: {username}")
+                    
+                    # 비밀번호 해시화
+                    hashed_password = get_password_hash(password)
+                    
+                    # 사용자 생성
+                    cursor.execute(
+                        INSERT_USER,
+                        {
+                            "username": username,
+                            "email": email,
+                            "hashed_password": hashed_password,
+                            "is_active": True,
+                            "created_at": datetime.now()
+                        }
+                    )
+                    user = cursor.fetchone()
+                    created_users.append(user)
+                    # logger.info(f"[행 {idx + 2}] 사용자 생성 성공")
+                    
+                except Exception as e:
+                    logger.error(f"[행 {idx + 2}] 처리 실패: {str(e)}")
+                    failed_items.append({
+                        "row": idx + 2,
+                        "username": username if 'username' in locals() else None,
+                        "email": email if 'email' in locals() else None,
+                        "error": str(e)
+                    })
+                    continue
+            
+            if not created_users:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"이미 등록된 이메일입니다: {row['email']}"
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": "유효한 데이터가 없습니다.",
+                        "errors": failed_items
+                    }
                 )
             
-            # 사용자명 중복 확인
-            cursor.execute(
-                SELECT_USER_BY_USERNAME,
-                {"username": row['username']}
-            )
-            if cursor.fetchone():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"이미 등록된 사용자명입니다: {row['username']}"
-                )
+            db.commit()
             
-            # 비밀번호 해시화
-            hashed_password = get_password_hash(row['password'])
+            result = {
+                "status": "success" if len(failed_items) == 0 else "partial_success",
+                "message": "파일 처리가 완료되었습니다.",
+                "total_rows": len(df),
+                "success_count": len(created_users),
+                "error_count": len(failed_items),
+                "failed_items": failed_items
+            }
             
-            # 사용자 생성
-            cursor.execute(
-                INSERT_USER,
-                {
-                    "username": row['username'],
-                    "email": row['email'],
-                    "hashed_password": hashed_password,
-                    "is_active": True,
-                    "created_at": datetime.now()
-                }
+            logger.info(f"[일괄 등록] 완료 - 성공: {len(created_users)}, 실패: {len(failed_items)}")
+            return result
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[일괄 등록] 치명적 오류: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e)
             )
-            user = cursor.fetchone()
-            created_users.append(user)
-        
-        db.commit()
-        
-        logger.info(f"사용자 일괄 등록 성공: {len(created_users)}명")
-        return created_users
         
     except HTTPException as e:
         logger.error(f"사용자 일괄 등록 실패: {str(e)}")
         raise e
     except Exception as e:
-        logger.error(f"사용자 일괄 등록 중 오류 발생: {str(e)}")
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"사용자 일괄 등록 중 오류 발생:\n"
+                    f"오류 유형: {type(e).__name__}\n"
+                    f"오류 메시지: {str(e)}\n"
+                    f"스택 트레이스:\n{error_trace}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"사용자 일괄 등록 중 오류가 발생했습니다: {str(e)}"
         ) 

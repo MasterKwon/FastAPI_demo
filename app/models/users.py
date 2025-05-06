@@ -2,7 +2,7 @@
 사용자 관련 모델 정의
 """
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -139,4 +139,18 @@ class User(BaseModel):
     is_active: bool
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True) 
+    model_config = ConfigDict(from_attributes=True)
+
+class FailedItem(BaseModel):
+    row: int
+    username: Optional[str] = None
+    email: Optional[str] = None
+    error: str
+
+class BulkUploadResponse(BaseModel):
+    status: str
+    message: str
+    total_rows: int
+    success_count: int
+    error_count: int
+    failed_items: List[FailedItem] 

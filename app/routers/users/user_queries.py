@@ -10,14 +10,6 @@ VALUES (%(username)s, %(email)s, %(hashed_password)s, %(is_active)s, %(created_a
 RETURNING id, username, email, is_active, created_at;
 """
 
-# 모든 사용자 조회
-SELECT_ALL_USERS = """
-SELECT id, username, email, is_active, created_at
-FROM users
-ORDER BY {sort_column} {sort_direction}
-LIMIT %(limit)s OFFSET %(skip)s;
-"""
-
 # 특정 사용자 조회
 SELECT_USER_BY_ID = """
 SELECT id, username, email, is_active, created_at
@@ -48,7 +40,8 @@ WHERE email = %(email)s;
 
 # 사용자 검색 쿼리 템플릿
 SEARCH_USERS_TEMPLATE = """
-SELECT id, username, email, is_active, created_at
+SELECT id, username, email, is_active, created_at,
+       COUNT(*) OVER() as total_count
 FROM users
 {where_condition}
 ORDER BY {sort_column} {sort_direction}

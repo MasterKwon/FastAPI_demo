@@ -23,33 +23,6 @@ SELECT * FROM UNNEST(
 RETURNING id, name, description, price, tax, created_at;
 """
 
-# 모든 상품 조회
-SELECT_ALL_ITEMS = """
-SELECT i.id, i.name, i.description, i.price, i.tax, i.created_at,
-       COALESCE(json_agg(
-           json_build_object(
-               'id', img.id,
-               'item_id', img.item_id,
-               'image_path', img.image_path,
-               'image_filename', img.image_filename,
-               'original_filename', img.original_filename,
-               'file_extension', img.file_extension,
-               'file_size', img.file_size,
-               'created_at', img.created_at
-           )
-       ) FILTER (WHERE img.id IS NOT NULL), '[]') as images
-FROM items i
-LEFT JOIN item_images img ON i.id = img.item_id
-GROUP BY i.id
-ORDER BY {sort_column} {sort_direction}
-LIMIT %(limit)s OFFSET %(skip)s;
-"""
-
-# 전체 상품 수 조회
-SELECT_ITEM_COUNT = """
-SELECT COUNT(*) as count FROM items;
-"""
-
 # 상품 검색 쿼리 템플릿
 SEARCH_ITEMS_TEMPLATE = """
 SELECT i.id, i.name, i.description, i.price, i.tax, i.created_at,
@@ -149,18 +122,4 @@ class ImageQueries:
         file_size = %(file_size)s
     WHERE item_id = %(item_id)s
     RETURNING id, created_at;
-    """
-    
-    # 상품의 이미지 상세 정보 조회
-    SELECT_IMAGE_DETAILS = """
-    SELECT image_path, image_filename, original_filename, file_extension, file_size
-    FROM item_images 
-    WHERE item_id = %(item_id)s;
-    """
-    
-    # 상품의 이미지 경로 조회
-    SELECT_IMAGE_PATH = """
-    SELECT image_path, image_filename
-    FROM item_images
-    WHERE id = %(img_id)s;
     """ 
