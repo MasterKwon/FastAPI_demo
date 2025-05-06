@@ -9,15 +9,12 @@ import pandas as pd
 from io import BytesIO
 from app.database.pool import get_db
 from app.utils.logger import logger, app_logger, log_operation, log_query, LogType
-from app.services.bulk_upload import validate_excel_data, ExcelValidationError
 from .item_queries import (
     INSERT_ITEM, SELECT_ITEM_BY_ID, BULK_INSERT_ITEMS,
     UPDATE_ITEM, DELETE_ITEM, ImageQueries, SEARCH_ITEMS_TEMPLATE
 )
-from app.database.schemas import CREATE_ALL_TABLES
 from app.models.item import ItemCreate, ItemResponse, ItemImage
 import time
-import logging
 from enum import Enum
 from fastapi.responses import StreamingResponse
 from app.utils.file_handler import save_file, delete_file, FileType
@@ -50,54 +47,64 @@ async def create_item(
 ):
     """
     새로운 상품을 생성합니다.
+    
+    Args:
+        item: 생성할 상품 정보
+        image: 상품 이미지 (선택사항)
+        
+    Returns:
+        생성된 상품 정보
+        
+    Raises:
+        HTTPException: 
+            - 500: 데이터베이스 오류 발생 시
     """
     try:
-        cursor = db.cursor()
-        
-        # 상품 정보 저장
-        cursor.execute(
-            INSERT_ITEM,
-            {
-                "name": item.name,
-                "description": item.description,
-                "price": item.price,
-                "tax": item.tax,
-                "created_at": datetime.now()
-            }
-        )
-        result = cursor.fetchone()
-        
-        # 이미지가 있는 경우 저장
-        item_image = None
-        if image:
-            # add_item_image 함수를 재사용하여 이미지 저장
-            item_image = await add_item_image(
-                item_id=result["id"],
-                image=image,
-                db=db
+        with db.cursor() as cursor:
+            # 상품 정보 저장
+            cursor.execute(
+                INSERT_ITEM,
+                {
+                    "name": item.name,
+                    "description": item.description,
+                    "price": item.price,
+                    "tax": item.tax,
+                    "created_at": datetime.now()
+                }
             )
-        
-        db.commit()
-        
-        # 응답 객체 생성
-        response = ItemResponse(
-            id=result["id"],
-            name=item.name,
-            description=item.description,
-            price=item.price,
-            tax=item.tax,
-            created_at=result["created_at"],
-            images=[item_image] if item_image else []
-        )
-        
-        app_logger.log(
-            logging.INFO,
-            f"상품 생성 성공: {result['id']}",
-            log_type=LogType.ALL
-        )
-        
-        return response
-        
+            result = cursor.fetchone()
+            
+            # 이미지가 있는 경우 저장
+            item_image = None
+            if image:
+                # add_item_image 함수를 재사용하여 이미지 저장
+                item_image = await add_item_image(
+                    item_id=result["id"],
+                    image=image,
+                    db=db
+                )
+            
+            db.commit()
+            
+            # 응답 객체 생성
+            response = ItemResponse(
+                id=result["id"],
+                name=item.name,
+                description=item.description,
+                price=item.price,
+                tax=item.tax,
+                created_at=result["created_at"],
+                images=[item_image] if item_image else []
+            )
+            
+            app_logger.log(
+                logging.INFO,
+                f"상품 생성 성공: {result['id']}",
+                log_type=LogType.ALL
+            )
+            
+            return response
+            
     except Exception as e:
         db.rollback()
         app_logger.log(
@@ -557,19 +564,33 @@ async def read_item(
 ):
     """
     특정 상품을 조회합니다.
+    
+    Args:
+        item_id: 조회할 상품 ID
+        
+    Returns:
+        상품 정보
+        
+    Raises:
+        HTTPException:
+            - 404: 상품을 찾을 수 없는 경우
+            - 500: 데이터베이스 오류 발생 시
     """
     try:
         with db.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(SELECT_ITEM_BY_ID, {"item_id": item_id})
+            cursor.execute(
+                SELECT_ITEM_BY_ID,
+                {"item_id": item_id}
+            )
             result = cursor.fetchone()
             if not result:
-                raise HTTPException(status_code=404, detail="상품을 찾을 수 없습니다.")
-            
-            # 이미지 정보 조회
-            cursor.execute(ImageQueries.SELECT_BY_ITEM, {"item_id": item_id})
-            images = cursor.fetchall()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="상품을 찾을 수 없습니다."
+                )
             
             return result
+            
     except Exception as e:
         app_logger.log(
             logging.ERROR,
@@ -697,127 +718,84 @@ async def update_item(
 ):
     """
     상품 정보를 업데이트합니다.
+    
+    Args:
+        item_id: 업데이트할 상품 ID
+        item: 업데이트할 상품 정보
+        image: 새로운 상품 이미지 (선택사항)
+        
+    Returns:
+        업데이트된 상품 정보
+        
+    Raises:
+        HTTPException:
+            - 404: 상품을 찾을 수 없는 경우
+            - 500: 데이터베이스 오류 발생 시
     """
     try:
-        cursor = db.cursor()
-        
-        # 기존 상품 정보 조회
-        cursor.execute(SELECT_ITEM_BY_ID, {"item_id": item_id})
-        existing_item = cursor.fetchone()
-        
-        if not existing_item:
-            raise HTTPException(status_code=404, detail="상품을 찾을 수 없습니다.")
-        
-        # 상품 정보 업데이트
-        update_fields = []
-        update_values = []
-        
-        if item.name is not None:
-            update_fields.append("name = %s")
-            update_values.append(item.name)
-        if item.description is not None:
-            update_fields.append("description = %s")
-            update_values.append(item.description)
-        if item.price is not None:
-            update_fields.append("price = %s")
-            update_values.append(item.price)
-        if item.tax is not None:
-            update_fields.append("tax = %s")
-            update_values.append(item.tax)
-        
-        if update_fields:
-            update_values.append(item_id)
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            # 상품 존재 여부 확인
             cursor.execute(
-                UPDATE_ITEM.format(update_fields=", ".join(update_fields)),
-                update_values
+                SELECT_ITEM_BY_ID,
+                {"item_id": item_id}
+            )
+            existing_item = cursor.fetchone()
+            if not existing_item:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="상품을 찾을 수 없습니다."
+                )
+            
+            # 상품 정보 업데이트
+            cursor.execute(
+                UPDATE_ITEM,
+                {
+                    "item_id": item_id,
+                    "name": item.name,
+                    "description": item.description,
+                    "price": item.price,
+                    "tax": item.tax,
+                    "updated_at": datetime.now()
+                }
             )
             result = cursor.fetchone()
-        
-        # 이미지 업데이트
-        if image:
-            # 기존 이미지 정보 조회
-            cursor.execute(ImageQueries.SELECT_BY_ITEM, {"item_id": item_id})
-            existing_image = cursor.fetchone()
             
-            # 새 이미지 저장
-            image_info = await save_file(image, FileType.IMAGE)
-            original_filename = image.filename
-            file_extension = os.path.splitext(image.filename)[1] if image.filename else '.jpg'
-            file_size = image.size or 0  # size가 None일 경우 0으로 설정
-            
-            # 기존 이미지가 있으면 삭제
-            if existing_image:
-                delete_file({
-                    "path": existing_image["image_path"],
-                    "filename": existing_image["image_filename"]
-                })
-                cursor.execute(
-                    ImageQueries.UPDATE,
-                    {
-                        "image_path": image_info["path"],
-                        "image_filename": image_info["filename"],
-                        "original_filename": original_filename,
-                        "file_extension": file_extension,
-                        "file_size": file_size,
-                        "item_id": item_id
-                    }
-                )
-            else:
-                cursor.execute(
-                    ImageQueries.INSERT,
-                    {
-                        "item_id": item_id,
-                        "image_path": image_info["path"],
-                        "image_filename": image_info["filename"],
-                        "original_filename": original_filename,
-                        "file_extension": file_extension,
-                        "file_size": file_size,
-                        "created_at": datetime.now()
-                    }
-                )
-            
-            img_result = cursor.fetchone()
-            
-            # 이미지 정보 객체 생성
-            item_image = ItemImage(
-                id=img_result["id"],
-                item_id=item_id,
-                image_path=img_result["image_path"],
-                image_filename=img_result["image_filename"],
-                original_filename=original_filename,
-                file_extension=file_extension,
-                file_size=file_size,
-                created_at=img_result["created_at"]
-            )
-        else:
+            # 이미지가 있는 경우 업데이트
             item_image = None
-        
-        db.commit()
-        
-        # 응답 객체 생성
-        response = ItemResponse(
-            id=item_id,
-            name=item.name or existing_item["name"],
-            description=item.description or existing_item["description"],
-            price=item.price or existing_item["price"],
-            tax=item.tax or existing_item["tax"],
-            created_at=result["created_at"],
-            images=[item_image] if item_image else []
-        )
-        
-        app_logger.log(
-            logging.INFO,
-            f"상품 업데이트 성공: {item_id}",
-            log_type=LogType.ALL
-        )
-        
-        return response
-        
+            if image:
+                item_image = await add_item_image(
+                    item_id=item_id,
+                    image=image,
+                    db=db
+                )
+            
+            db.commit()
+            
+            # 응답 객체 생성
+            response = ItemResponse(
+                id=result["id"],
+                name=item.name,
+                description=item.description,
+                price=item.price,
+                tax=item.tax,
+                created_at=result["created_at"],
+                updated_at=result["updated_at"],
+                images=[item_image] if item_image else []
+            )
+            
+            app_logger.log(
+                logging.INFO,
+                f"상품 정보 업데이트 성공: {item_id}",
+                log_type=LogType.ALL
+            )
+            
+            return response
+            
     except Exception as e:
         db.rollback()
         app_logger.log(
             logging.ERROR,
-            f"상품 업데이트 실패: {str(e)}",
+            f"상품 정보 업데이트 실패: {str(e)}",
             log_type=LogType.ALL
         )
         raise HTTPException(status_code=500, detail=str(e))
@@ -830,35 +808,47 @@ async def delete_item(
 ):
     """
     상품을 삭제합니다.
+    
+    Args:
+        item_id: 삭제할 상품 ID
+        
+    Returns:
+        삭제 성공 메시지
+        
+    Raises:
+        HTTPException:
+            - 404: 상품을 찾을 수 없는 경우
+            - 500: 데이터베이스 오류 발생 시
     """
     try:
-        cursor = db.cursor()
-        
-        # 상품의 모든 이미지 조회
-        cursor.execute(ImageQueries.SELECT_IMAGE_DETAILS, {"item_id": item_id})
-        images = cursor.fetchall()
-        
-        # 각 이미지 삭제
-        for image in images:
-            await delete_item_image(
-                item_id=item_id,
-                img_id=image["id"],
-                db=db
+        with db.cursor(cursor_factory=RealDictCursor) as cursor:
+            # 상품 존재 여부 확인
+            cursor.execute(
+                SELECT_ITEM_BY_ID,
+                {"item_id": item_id}
             )
-        
-        # 상품 삭제
-        cursor.execute(DELETE_ITEM, {"item_id": item_id})
-        
-        db.commit()
-        
-        app_logger.log(
-            logging.INFO,
-            f"상품 삭제 성공: {item_id}",
-            log_type=LogType.ALL
-        )
-        
-        return {"message": "상품이 성공적으로 삭제되었습니다."}
-        
+            if not cursor.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="상품을 찾을 수 없습니다."
+                )
+            
+            # 상품 삭제
+            cursor.execute(
+                DELETE_ITEM,
+                {"item_id": item_id}
+            )
+            
+            db.commit()
+            
+            app_logger.log(
+                logging.INFO,
+                f"상품 삭제 성공: {item_id}",
+                log_type=LogType.ALL
+            )
+            
+            return {"message": "상품이 성공적으로 삭제되었습니다."}
+            
     except Exception as e:
         db.rollback()
         app_logger.log(

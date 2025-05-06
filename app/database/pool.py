@@ -2,6 +2,7 @@
 데이터베이스 연결 풀 모듈
 """
 from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 from app.config import settings
 from fastapi import Depends
 import psycopg2
@@ -36,7 +37,9 @@ class DatabasePool:
 
     def get_connection(self):
         """데이터베이스 연결을 가져옵니다."""
-        return self._pool.getconn()
+        conn = self._pool.getconn()
+        conn.cursor_factory = RealDictCursor
+        return conn
 
     def put_connection(self, conn):
         """데이터베이스 연결을 반환합니다."""
