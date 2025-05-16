@@ -1,0 +1,22 @@
+# 개발 환경에 필요한 추가 패키지들입니다.
+# 이 파일은 코드 품질 관리, 포맷팅, 타입 체크 등 개발 시 필요한 도구들을 포함합니다.
+#
+# 설치 방법:
+# pip install -r requirements-dev.txt
+#
+# 참고: 이 파일을 설치하기 전에 requirements.txt를 먼저 설치해야 합니다.
+
+# 코드 품질
+pylint==3.0.3  # 코드 분석
+black==24.1.1  # 코드 포맷팅
+isort==5.13.2  # import 정렬
+
+# 타입 체크
+mypy==1.8.0  # 정적 타입 체크
+types-python-jose==3.3.0.0  # python-jose 타입 힌트
+types-passlib==1.7.4.0  # passlib 타입 힌트
+
+# 개발 도구
+ipython==8.21.0  # 향상된 Python 인터프리터
+ipdb==0.13.13  # 디버깅
+watchdog==3.0.0  # 파일 변경 감지 

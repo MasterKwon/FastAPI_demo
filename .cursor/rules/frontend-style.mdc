@@ -1,0 +1,215 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# FRONTEND_RULES
+
+## DIRECTORY_STRUCTURE
+```
+src/
+  components/          # 재사용 컴포넌트
+    layout/           # 레이아웃 컴포넌트
+    common/           # 공통 UI 컴포넌트
+    features/         # 기능별 컴포넌트
+      auth/           # 인증 관련
+      user/           # 사용자 관련
+      product/        # 상품 관련
+    forms/            # 폼 관련 컴포넌트
+  pages/              # 페이지 컴포넌트
+    public/           # 공개 페이지
+    auth/             # 인증 관련
+    dashboard/        # 대시보드
+  services/           # API 서비스
+    api/              # API 클라이언트
+    auth/             # 인증 관련
+    user/             # 사용자 관련
+    product/          # 상품 관련
+  types/              # TypeScript 타입
+    api/              # API 응답 타입
+    models/           # 도메인 모델
+    common/           # 공통 타입
+  hooks/              # 커스텀 훅
+    common/           # 공통 훅
+    auth/             # 인증 관련
+    api/              # API 관련
+  utils/              # 유틸리티
+    format/           # 포맷팅
+    validation/       # 유효성 검사
+    helpers/          # 헬퍼 함수
+  contexts/           # Context API
+    auth/             # 인증 관련
+    theme/            # 테마 관련
+    app/              # 앱 전역
+  constants/          # 상수 값
+  assets/             # 정적 파일
+  styles/             # 전역 스타일
+  config/             # 환경 설정
+```
+
+## NAMING_CONVENTIONS
+| Type         | Rule                  | Example                |
+|--------------|-----------------------|------------------------|
+| Component    | PascalCase            | UserProfile            |
+| File         | PascalCase            | UserProfile.tsx        |
+| Hook         | camelCase             | useAuth                |
+| Function     | camelCase             | fetchUserData          |
+| Variable     | camelCase             | isLoading              |
+| Constant     | UPPER_SNAKE_CASE      | API_URL                |
+| Type         | PascalCase            | UserResponse           |
+| Style        | camelCase             | button.module.css      |
+
+## COMPONENT_PATTERN
+```tsx
+import React from 'react';
+import styles from './Component.module.css';
+
+interface Props {
+  title: string;
+  onClick: () => void;
+}
+
+export const Component: React.FC<Props> = ({ title, onClick }) => {
+  return (
+    <div className={styles.container}>
+      <h1>{title}</h1>
+      <button onClick={onClick}>Click</button>
+    </div>
+  );
+};
+```
+
+## HOOK_PATTERN
+```tsx
+import { useState, useEffect } from 'react';
+
+export const useData = (url: string) => {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    fetch(url).then(res => res.json()).then(setData);
+  }, [url]);
+  return data;
+};
+```
+
+## STYLE_PATTERN
+- CSS Modules 사용
+- BEM 명명 규칙 적용
+- 전역 스타일은 styles/globals.css에서 관리
+- 반응형 디자인: 모바일 퍼스트
+- 테마 변수는 CSS 변수로 정의
+
+## API_PATTERN
+```tsx
+import axios from 'axios';
+
+export const fetchData = async (id: string) => {
+  const response = await axios.get(`/api/data/${id}`);
+  return response.data;
+};
+```
+
+## STATE_MANAGEMENT
+- 전역 상태는 Redux/Context API 사용
+- 컴포넌트 내부 상태는 useState/useReducer 사용
+- API 응답 캐싱은 React Query 사용
+
+## ERROR_HANDLING
+- try-catch로 API 에러 처리
+- 에러 바운더리 컴포넌트 사용
+- 사용자 친화적인 에러 메시지
+- 네트워크 오류 시 폴백 UI
+
+## PERFORMANCE_OPTIMIZATION
+- React.lazy와 Suspense로 코드 스플리팅
+- React.memo로 불필요한 리렌더링 방지
+- useMemo와 useCallback 적절히 사용
+- 이미지 최적화 (lazy loading, WebP)
+- 번들 크기 최적화
+
+## ACCESSIBILITY
+- 시맨틱 HTML 사용
+- ARIA 속성 적절히 사용
+- 키보드 네비게이션 지원
+- WCAG 2.1 기준 준수
+- 색상 대비 고려
+
+## INTERNATIONALIZATION
+- i18next 사용
+- 번역 파일은 별도 디렉토리 관리
+- 날짜/시간은 사용자 로케일 기준
+- 시간대는 UTC 기준 저장
+
+## TEST_PATTERN
+- Jest + React Testing Library 사용
+- 컴포넌트 단위 테스트 작성
+- Cypress로 E2E 테스트
+- 주요 사용자 시나리오 테스트
+
+## GIT_COMMIT_RULES
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+- feat: 새로운 기능
+- fix: 버그 수정
+- docs: 문서 수정
+- style: 코드 포맷팅
+- refactor: 코드 리팩토링
+- test: 테스트 코드
+- chore: 빌드/도구 변경
+
+## CODE_REVIEW_CHECKLIST
+- 코드 품질
+  - 이해하기 쉽고 유지보수가 용이한가?
+  - 중복 코드가 없는가?
+  - 적절한 주석이 있는가?
+  - 타입이 올바르게 정의되어 있는가?
+- 성능
+  - 불필요한 리렌더링이 없는가?
+  - 메모리 누수가 없는가?
+  - 번들 크기가 적절한가?
+- 보안
+  - 민감한 정보가 노출되지 않았는가?
+  - XSS 취약점이 없는가?
+  - CSRF 방어가 되어 있는가?
+
+## DEPLOYMENT_PROCESS
+- 개발: npm run dev
+- 린트: npm run lint
+- 타입체크: npm run type-check
+- 빌드: npm run build
+- 테스트: npm run test
+- 배포: npm run deploy
+
+## PERFORMANCE_METRICS
+- First Contentful Paint (FCP)
+- Largest Contentful Paint (LCP)
+- First Input Delay (FID)
+- Cumulative Layout Shift (CLS)
+- 모니터링 도구
+  - Lighthouse
+  - Web Vitals
+  - Chrome DevTools Performance
+  - React Profiler
+
+## BUILD_CONFIG
+```json
+{
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  }
+}
+```
+
+## DOCS
+- React: https://reactjs.org/
+- Next.js: https://nextjs.org/
+
+
+
