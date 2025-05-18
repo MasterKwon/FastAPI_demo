@@ -15,6 +15,65 @@ alwaysApply: false
 
 ---
 
+### 프로젝트 구조 규칙
+```
+backend/
+├── core/ # 핵심 설정 및 미들웨어
+├── database/ # 데이터베이스 관련
+├── queries/ # SQL 쿼리
+├── routers/ # API 라우터
+├── schemas/ # 스키마
+├── utils/ # 유틸리티
+├── tools/ # 개발 도구
+├── main.py # 애플리케이션 진입점
+└── requirements.txt # 의존성 관리
+```
+
+### 파일 구조 규칙
+- 모든 디렉토리에 `__init__.py` 포함
+- 파일명은 소문자와 언더스코어 사용
+- 각 파일은 단일 책임을 가짐
+- 설정 파일은 `config.py`로 통일
+- 메인 진입점은 `main.py`로 통일
+
+### 디렉토리 역할 규칙
+- `core/`: 애플리케이션의 핵심 설정과 미들웨어 관리
+  - 환경 변수, 데이터베이스 설정
+  - CORS, 로깅, 인증 등 미들웨어
+  - 전역 예외 처리
+
+- `database/`: 데이터베이스 관련 기능
+  - 비동기 연결 풀 관리
+  - 트랜잭션 관리
+
+- `queries/`: SQL 쿼리문 관리
+  - CRUD 쿼리 정의
+  - 쿼리 파라미터화
+  - 쿼리 템플릿
+
+- `routers/`: API 엔드포인트 정의
+  - RESTful API 라우팅
+  - 요청/응답 처리
+  - 의존성 주입
+
+- `services/`: 비즈니스 로직 구현
+  - 데이터 처리 로직
+  - 트랜잭션 관리
+
+- `schemas/`: 데이터 모델 정의
+  - Pydantic 모델
+  - 단일 엔티티와 목록 모델 통합
+  - 데이터 검증 규칙
+
+- `utils/`: 공통 유틸리티
+  - 로깅 설정
+  - 데코레이터
+
+- `tools/`: 개발 도구
+  - 모델 동기화 도구
+  - 코드 생성 도구
+  - 개발 보조 스크립트
+
 ## 🗄️ 데이터베이스 스키마 관리
 
 - 데이터베이스 스키마는 `database/schema.sql` 파일에서 관리됩니다.
@@ -25,6 +84,11 @@ alwaysApply: false
   3. 필요한 경우 모델에 대한 추가 설명 요청
 - 테이블 구조 변경이 필요한 경우 먼저 논의 후 진행
 - 모델과 실제 DB 스키마의 일관성 유지
+
+### 쿼리 관리
+- `backend/queries/` 디렉토리의 쿼리 파일들은 `schema.sql`의 구조를 따릅니다.
+- 각 도메인별로 쿼리 파일을 분리하여 관리합니다.
+- 새로운 쿼리 추가/수정 시 반드시 `schema.sql`의 테이블 구조를 참조합니다.
 
 ---
 
@@ -58,22 +122,378 @@ def process_excel_row(row: Dict) -> Dict:
 
 📚 참고: @FastAPI 공식 문서
 
+---
+
 ## 프로젝트 구조변경에 따른 import 경로 변경
 - import 경로를 변경할 때는 **경로만 변경**하고, 클래스나 함수의 구조(시그니처, 동작 방식)는 절대 변경하지 않습니다.
 - 예를 들어, `from app.utils.logger import app_logger, LogType`를 `from backend.utils.logger import app_logger, LogType`로 변경할 때, 나머지 코드는 그대로 유지합니다.
 
 ---
 
-## SQL Query Implementation
-- Raw SQL 쿼리 사용 (ORM 사용하지 않음)
-- 쿼리는 `queries/` 디렉토리에 도메인별로 분리하여 관리
-- 각 쿼리 함수는 하나의 SQL 쿼리만 실행
-- 쿼리 함수명은 동작을 명확히 표현
-- 파라미터는 딕셔너리 형태로 전달
-- 쿼리 결과는 명시적인 타입으로 반환
+### 스키마 구조화 규칙
+1. 스키마의 관리 규칙은 아래 내용을 따른다.
+    - 스키마 파일명: `{entity}.py` (예: `user.py`, `item.py`)
+    - 스키마 파일 위치: `backend/schemas/` 디렉토리
+    - 스키마 클래스명: `{Entity}Base`, `{Entity}Create`, `{Entity}`, `{Entity}Update`, `{Entity}Response`
+    - 스키마 파일 분리: 단일 엔티티와 목록 관련 스키마 분리
+        - 단일형: `{entity}.py` (예: `user.py`, `item.py`)
+            - 기본 CRUD 작업에 필요한 스키마 정의
+            - 단일 엔티티의 생성, 수정, 응답 스키마 포함
+        - 목록형: `{entity}_list.py` (예: `user_list.py`, `item_list.py`)
+            - 목록 조회, 정렬, 필터링에 필요한 스키마 정의
+            - 페이지네이션, 정렬, 필터링 관련 스키마 포함
+    - 스키마 필드 타입: Pydantic 타입 사용
+    - 스키마 검증: Pydantic validator 사용
+    - 공통 스키마: `base.py`에 공통으로 사용되는 스키마 정의
+        - 기본 스키마: `BaseModel` 상속
+        - 공통 필드: `id`, `created_at`, `updated_at` 등
 
+2. 스키마 파일 구조
+   ```python
+   # {entity}.py
+   class EntityBase(BaseModel):
+       """기본 엔티티 스키마"""
+       # 기본 필드 정의
 
+   class EntityCreate(EntityBase):
+       """엔티티 생성 스키마"""
+       # 생성 시 필요한 추가 필드
 
+   class EntityUpdate(BaseModel):
+       """엔티티 수정 스키마"""
+       # 수정 가능한 필드 (모두 Optional)
 
+   class EntityResponse(EntityBase):
+       """엔티티 응답 스키마"""
+       # 응답에 포함될 추가 필드
 
+   # {entity}_list.py
+   class EntitySortColumn(str, Enum):
+       """정렬 가능한 컬럼 정의"""
 
+   class EntityFilter(BaseModel):
+       """필터링 조건 정의"""
+
+   class EntitySort(BaseModel):
+       """정렬 조건 정의"""
+
+   class EntitiesResponse(BaseModel):
+       """목록 응답 스키마"""
+       # 목록과 페이지네이션 정보
+   ```
+
+3. 스키마 import 규칙
+   - 필요한 스키마만 import
+   - `__init__.py`에서는 간단하게 import
+   ```python
+   # __init__.py
+   from .user import *
+   from .item import *
+   from .common import *
+   ```
+   
+4. 스키마 검증 규칙
+   - 필수 필드 검증
+   - 길이 제한
+   - 이메일 형식 검증
+   - 기본적인 타입 검증
+
+5. 스키마 문서화 규칙
+   - 각 클래스와 필드에 대한 설명
+   - 명확한 타입 힌팅
+   - 예시 값 제공 (필요한 경우)
+
+6. 스키마 확장 규칙
+   - 필요한 경우에만 추가 기능 구현
+   - 과도한 추상화 지양
+   - 실제 사용되는 기능만 구현   
+---
+
+### 쿼리 파일 구조화 규칙
+1. 쿼리 파일의 관리 규칙은 아래 내용을 따른다.
+    - 쿼리 파일명: `{entity}_queries.py` (예: `user_queries.py`, `item_queries.py`)
+    - 쿼리 파일 위치: `backend/queries/` 디렉토리
+    - 쿼리 파일 분리: 단일 엔티티와 관련된 쿼리만 포함
+    - 쿼리 파라미터: `$1`, `$2` 등의 형식으로 순서대로 정의
+    - 쿼리 결과: 명확한 컬럼 별칭 사용
+    - 쿼리 상수명: `{OPERATION}_{ENTITY}` (예: `INSERT_USER`, `SELECT_ITEM_BY_ID`)
+    - 쿼리 상수명 예시:
+    ```python
+    # 기본 CRUD
+    INSERT_USER = "..."  # 사용자 생성
+    SELECT_USER_BY_ID = "..."  # ID로 사용자 조회
+    UPDATE_USER = "..."  # 사용자 정보 수정
+    DELETE_USER = "..."  # 사용자 삭제
+    
+    # 목록 조회
+    SELECT_USERS = "..."  # 사용자 목록 조회
+    ```
+
+2. 쿼리 구현 규칙
+    - Raw SQL 쿼리 사용 (ORM 사용하지 않음)
+    - 쿼리는 `queries/` 디렉토리에 도메인별로 분리하여 관리
+    - 각 쿼리 함수는 하나의 SQL 쿼리만 실행
+    - 쿼리 함수명은 동작을 명확히 표현
+    - 파라미터는 딕셔너리 형태로 전달
+    - 쿼리 결과는 명시적인 타입으로 반환
+    - 쿼리 함수 반환 타입 예시:
+    ```python
+    from typing import Dict, List, Optional, Any
+
+    async def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+        """단일 사용자 조회"""
+        ...
+    async def get_users(
+        skip: int = 0, 
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """사용자 목록 조회"""
+        ...
+    ```
+    - 비동기 처리와 관련된 규칙:
+        - 모든 쿼리 함수는 async/await 사용
+        - 데이터베이스 연결은 connection pool 사용
+        - 트랜잭션은 async with 구문 사용
+
+3. 쿼리 파일 구조
+    ```python
+    """
+    {엔티티명} 관련 SQL 쿼리
+
+    파라미터 설명:
+    $1: {파라미터1} ({파라미터1 설명})
+    $2: {파라미터2} ({파라미터2 설명})
+    """
+    from typing import Dict, Any
+
+    # 기본 CRUD 쿼리
+    INSERT_{ENTITY} = """
+    INSERT INTO {table} ({columns})
+    VALUES ({values})
+    RETURNING {returning_columns};
+    """
+
+    SELECT_{ENTITY}_BY_ID = """
+    SELECT {columns}
+    FROM {table}
+    WHERE id = $1;
+    """
+
+    UPDATE_{ENTITY} = """
+    UPDATE {table}
+    SET {set_clause}
+    WHERE id = $1
+    RETURNING {returning_columns};
+    """
+
+    DELETE_{ENTITY} = """
+    DELETE FROM {table}
+    WHERE id = $1;
+    """
+
+    # 목록 조회 쿼리
+    SELECT_{ENTITIES} = """
+    SELECT {columns}
+    FROM {table}
+    ORDER BY id
+    LIMIT $1 OFFSET $2;
+    """
+    ```
+
+4. 쿼리 작성 규칙
+    - 쿼리는 대문자로 작성
+    - 쿼리 파라미터는 `$1`, `$2` 등의 형식으로 순서대로 정의
+    - 쿼리 결과 컬럼은 명확한 별칭 사용
+    - JOIN이 필요한 경우 LEFT JOIN 사용
+    - 페이지네이션이 필요한 경우 `LIMIT`와 `OFFSET` 사용
+    - 정렬이 필요한 경우 `ORDER BY` 사용
+    - 필터링이 필요한 경우 `WHERE` 절 사용
+    - 성능 최적화 규칙:
+        - 인덱스가 있는 컬럼을 WHERE 절의 첫 번째 조건으로 사용
+        - 대량 데이터 조회 시 페이지네이션 필수
+        - JOIN 시 필요한 컬럼만 선택적으로 조회
+    - 에러 처리 규칙:
+        - 쿼리 실행 시 발생할 수 있는 예외 처리
+        - 트랜잭션 실패 시 롤백 처리
+    - 보안 관련 규칙:        
+        - SQL 인젝션 방지를 위한 파라미터화된 쿼리 사용
+        - 민감한 데이터는 암호화하여 저장
+
+5. 쿼리 테스트 규칙
+    - 각 쿼리는 단위 테스트 작성
+    - 테스트는 실제 데이터베이스가 아닌 테스트 데이터베이스 사용
+    - 테스트 케이스는 정상 케이스와 예외 케이스 포함
+    - 트랜잭션 테스트는 롤백 처리
+
+6. 쿼리 문서화 규칙
+    - 각 쿼리 파일은 상세한 문서화
+    - 쿼리 파라미터와 결과 컬럼의 타입 명시
+    - 쿼리 실행 시 발생할 수 있는 예외 명시
+    - 쿼리 사용 예시 코드 포함
+
+7. 쿼리 유지보수 규칙
+    - 사용하지 않는 쿼리 정리
+    - 쿼리 변경 시 영향도 확인
+
+### 서비스 파일 규칙
+- 서비스 파일명: `{entity}_service.py` (예: `user_service.py`, `item_service.py`)
+- 서비스 클래스명: `{Entity}Service` (예: `UserService`, `ItemService`)
+- 서비스 파일 위치: `backend/services/` 디렉토리
+- 서비스 메서드명: `{action}_{entity}` (예: `create_user`, `update_item`)
+- 서비스 예외처리: `DatabaseError` 사용
+- 서비스 트랜잭션: `with self.db.cursor() as cursor:` 사용
+- 서비스 메서드 주석: docstring 형식으로 작성
+
+### 라우터 구조화 규칙
+1. 라우터 파일의 관리 규칙은 아래 내용을 따른다.
+    - 라우터 파일명: `{entity}_router.py` (예: `user_router.py`, `item_router.py`)
+    - 라우터 파일 위치: `backend/routers/` 디렉토리
+    - 라우터 파일 분리: 단일 엔티티와 관련된 라우터만 포함
+    - 라우터 클래스명: `router`
+    - 라우터 prefix: `/{entity}s` (예: `/users`, `/items`)
+    - 라우터 태그: `[{entity}s]` (예: `["users"]`, `["items"]`)
+    - 라우터 응답: `ResponseModel` 사용
+    - 라우터 예외처리: `HTTPException` 사용
+    - 라우터 로깅: `@log_operation` 데코레이터 사용
+    - 라우터 의존성: `Depends` 사용
+
+2. 라우터 구현 규칙
+    - FastAPI의 APIRouter 사용
+    - 각 엔드포인트는 하나의 책임만 가짐
+    - 의존성 주입을 통한 데이터베이스 연결 관리
+    - 에러 처리는 미들웨어나 예외 핸들러 사용
+    - 로깅은 데코레이터를 통한 일관된 처리
+    - 응답은 공통 응답 모델 사용
+    - 인증/인가는 미들웨어나 의존성으로 처리
+
+3. 라우터 파일 구조
+   ```python
+   """
+   {엔티티명} 관련 라우터
+   """
+   from fastapi import APIRouter, Depends, HTTPException, status
+   from typing import List, Optional
+   from backend.schemas.{entity} import {Entity}Create, {Entity}Update, {Entity}Response
+   from backend.schemas.common import ResponseModel
+   from backend.utils.decorators import log_operation
+
+   router = APIRouter(
+       prefix="/{entity}s",
+       tags=["{entity}s"],
+       responses={404: {"description": "Not found"}},
+   )
+
+   @router.post("/", response_model=ResponseModel[{Entity}Response])
+   @log_operation(log_type=LogType.ALL)
+   async def create_{entity}(
+       {entity}: {Entity}Create,
+       service: {Entity}Service = Depends(get_{entity}_service)
+   ):
+       """{엔티티명} 생성"""
+       ...
+
+   @router.get("/", response_model=ResponseModel[List[{Entity}Response]])
+   @log_operation(log_type=LogType.ALL)
+   async def read_{entity}s(
+       skip: int = Query(0, ge=0),
+       limit: int = Query(10, ge=1, le=100),
+       service: {Entity}Service = Depends(get_{entity}_service)
+   ):
+       """{엔티티명} 목록 조회"""
+       ...
+
+   @router.get("/{id}", response_model=ResponseModel[{Entity}Response])
+   @log_operation(log_type=LogType.ALL)
+   async def read_{entity}(
+       id: int = Path(..., ge=1),
+       service: {Entity}Service = Depends(get_{entity}_service)
+   ):
+       """{엔티티명} 상세 조회"""
+       ...
+
+   @router.put("/{id}", response_model=ResponseModel[{Entity}Response])
+   @log_operation(log_type=LogType.ALL)
+   async def update_{entity}(
+       id: int = Path(..., ge=1),
+       {entity}: {Entity}Update = None,
+       service: {Entity}Service = Depends(get_{entity}_service)
+   ):
+       """{엔티티명} 수정"""
+       ...
+
+   @router.delete("/{id}", response_model=ResponseModel)
+   @log_operation(log_type=LogType.ALL)
+   async def delete_{entity}(
+       id: int = Path(..., ge=1),
+       service: {Entity}Service = Depends(get_{entity}_service)
+   ):
+       """{엔티티명} 삭제"""
+       ...
+   ```
+
+4. 라우터 작성 규칙
+    - 엔드포인트 URL은 RESTful 규칙 준수
+    - HTTP 메서드는 목적에 맞게 사용
+    - 요청/응답 데이터는 Pydantic 모델 사용
+    - 쿼리 파라미터는 적절한 타입과 제약조건 설정
+    - 경로 파라미터는 적절한 타입과 제약조건 설정
+    - 응답 상태 코드는 목적에 맞게 설정
+    - 에러 응답은 일관된 형식 사용
+    - 비즈니스 로직은 서비스 레이어로 분리
+    - 데이터베이스 작업은 쿼리 레이어로 분리
+
+5. 라우터 테스트 규칙
+    - 각 엔드포인트는 단위 테스트 작성
+    - 테스트는 실제 데이터베이스가 아닌 테스트 데이터베이스 사용
+    - 테스트 케이스는 정상 케이스와 예외 케이스 포함
+    - 테스트 데이터는 fixtures로 관리
+
+### 공통 규칙
+- 파일 인코딩: UTF-8
+- 들여쓰기: 3칸 스페이스
+- 최대 줄 길이: 100자
+- 주석: 한글로 작성
+- 로깅: `app_logger.log` 사용
+- 예외처리: 계층별 적절한 예외 사용
+  - 라우터: `HTTPException`
+  - 서비스: `DatabaseError`
+  - 모델: `ValidationError`
+
+### 데이터베이스 규칙
+- 연결 풀: `asyncpg` 사용
+- 트랜잭션: `async with db.transaction():` 사용
+- 커서: `RealDictCursor` 사용
+- 쿼리 파라미터: 딕셔너리 형태로 전달
+- 에러 처리: `DatabaseError` 사용
+
+## 데이터베이스 작업 로깅 규칙
+
+### 1. 데이터베이스 작업 로깅
+- 모든 데이터베이스 작업은 `AsyncDatabasePool` 클래스의 메서드를 통해 수행
+- 각 메서드는 `@log_database_operation` 데코레이터로 장식됨
+- 로깅은 자동으로 수행되며 다음 정보가 포함됨:
+  - 실행 시간
+  - 쿼리 내용 (최대 100자)
+  - 성공/실패 여부
+  - 에러 메시지 (실패 시)
+
+### 2. 트랜잭션 관리
+- 트랜잭션은 `async_db_pool.transaction()` 컨텍스트 매니저를 통해 관리
+- 트랜잭션 시작, 커밋, 롤백이 자동으로 로깅됨
+- 트랜잭션 내의 모든 쿼리 실행이 자동으로 로깅됨
+
+### 3. 사용 예시
+```python
+# 단일 쿼리 실행
+row = await async_db_pool.fetchrow(conn, SELECT_ITEM_BY_ID, item_id)
+
+# 트랜잭션 내 다중 쿼리 실행
+async with async_db_pool.transaction(conn):
+    await async_db_pool.execute_query(conn, INSERT_ITEM, item_data)
+    await async_db_pool.execute_query(conn, UPDATE_STOCK, item_id)
+```
+
+### 4. 로그 형식
+- 성공 시: `[DB] {operation} executed successfully in {time}s: {query}...`
+- 실패 시: `[DB] {operation} failed after {time}s: {query}... Error: {error}`
+- 트랜잭션: `[DB] Transaction {started/committed/rolled back} in {time}s`
