@@ -5,6 +5,7 @@ from functools import wraps
 import logging
 from typing import Callable, Any
 from backend.utils.logger import app_logger, LogType
+from backend.database.exceptions import DatabaseError
 
 def log_operation(log_type: LogType = LogType.ALL) -> Callable:
     """
@@ -12,6 +13,12 @@ def log_operation(log_type: LogType = LogType.ALL) -> Callable:
     
     Args:
         log_type: 로그 출력 타입 (ALL: 모두, FILE: 파일만, CONSOLE: 콘솔만)
+        
+    Returns:
+        Callable: 데코레이터 함수
+        
+    Raises:
+        Exception: 원본 함수에서 발생한 예외
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
@@ -20,7 +27,7 @@ def log_operation(log_type: LogType = LogType.ALL) -> Callable:
                 # 함수 시작 로깅
                 app_logger.log(
                     logging.INFO,
-                    f"작업 시작: {func.__name__}",
+                    f"[API] 작업 시작: {func.__name__}",
                     log_type=log_type
                 )
                 
@@ -30,7 +37,7 @@ def log_operation(log_type: LogType = LogType.ALL) -> Callable:
                 # 함수 성공 로깅
                 app_logger.log(
                     logging.INFO,
-                    f"작업 완료: {func.__name__}",
+                    f"[API] 작업 완료: {func.__name__}",
                     log_type=log_type
                 )
                 
@@ -40,7 +47,7 @@ def log_operation(log_type: LogType = LogType.ALL) -> Callable:
                 # 함수 실패 로깅
                 app_logger.log(
                     logging.ERROR,
-                    f"작업 실패: {func.__name__} - {str(e)}",
+                    f"[API] 작업 실패: {func.__name__} - {str(e)}",
                     log_type=log_type
                 )
                 raise
@@ -54,6 +61,12 @@ def log_database_operation(log_type: LogType = LogType.ALL) -> Callable:
     
     Args:
         log_type: 로그 출력 타입 (ALL: 모두, FILE: 파일만, CONSOLE: 콘솔만)
+        
+    Returns:
+        Callable: 데코레이터 함수
+        
+    Raises:
+        DatabaseError: 데이터베이스 작업 중 발생한 예외
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
@@ -62,7 +75,7 @@ def log_database_operation(log_type: LogType = LogType.ALL) -> Callable:
                 # 쿼리 시작 로깅
                 app_logger.log(
                     logging.INFO,
-                    f"DB 작업 시작: {func.__name__}",
+                    f"[DB] 작업 시작: {func.__name__}",
                     log_type=log_type
                 )
                 
@@ -72,7 +85,7 @@ def log_database_operation(log_type: LogType = LogType.ALL) -> Callable:
                 # 쿼리 성공 로깅
                 app_logger.log(
                     logging.INFO,
-                    f"DB 작업 완료: {func.__name__}",
+                    f"[DB] 작업 완료: {func.__name__}",
                     log_type=log_type
                 )
                 
@@ -82,10 +95,10 @@ def log_database_operation(log_type: LogType = LogType.ALL) -> Callable:
                 # 쿼리 실패 로깅
                 app_logger.log(
                     logging.ERROR,
-                    f"DB 작업 실패: {func.__name__} - {str(e)}",
+                    f"[DB] 작업 실패: {func.__name__} - {str(e)}",
                     log_type=log_type
                 )
-                raise
+                raise DatabaseError(f"데이터베이스 작업 실패: {str(e)}")
                 
         return wrapper
     return decorator 

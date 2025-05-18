@@ -6,8 +6,14 @@ from typing import Optional
 import os
 from pathlib import Path
 import secrets
+from datetime import datetime
 
 class Settings(BaseSettings):
+    # 기본 설정
+    VERSION: str = "1.0.0"
+    ENVIRONMENT: str = "development"
+    START_TIME: datetime = datetime.utcnow()
+    
     # OpenAI API 설정
     OPENAI_API_KEY: str
     
@@ -33,8 +39,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # 로깅 설정
-    LOG_DIR: str = "backend/logs"
-    LOG_RETENTION_DAYS: int = 7
+    LOG_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+    LOG_RETENTION_DAYS: int = 30
     
     # # 캐시 설정 (Redis)
     # REDIS_HOST: str
@@ -44,6 +50,9 @@ class Settings(BaseSettings):
 
     # 라우터 버전별 엔드포인트 관리
     API_V1_STR: str = "/api/v1"
+
+    # 서비스 설정
+    SERVICE_NAME: str = "fastapi_demo"
 
     class Config:
         env_file = ".env"

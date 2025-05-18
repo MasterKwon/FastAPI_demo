@@ -9,6 +9,7 @@ from typing import Optional, Union, Any
 from functools import wraps
 from enum import Enum
 from datetime import datetime
+from backend.core.config import settings
 
 # 로그 타입 정의
 class LogType(Enum):
@@ -17,16 +18,13 @@ class LogType(Enum):
     CONSOLE = "C"  # 콘솔 출력만
 
 # 로그 디렉토리 설정
-log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+log_dir = settings.LOG_DIR
 os.makedirs(log_dir, exist_ok=True)
-
-# 서비스명 설정
-SERVICE_NAME = "fastapi_demo"
 
 # 로그 파일 경로 설정
 def get_log_file():
     current_date = datetime.now().strftime('%Y%m%d')
-    return os.path.join(log_dir, f"{SERVICE_NAME}_{current_date}.log")
+    return os.path.join(log_dir, f"{settings.SERVICE_NAME}_{current_date}.log")
 
 # 기존 setup_logger 함수 유지
 def setup_logger(name=None):
@@ -53,7 +51,7 @@ def setup_logger(name=None):
     console_handler = logging.StreamHandler()
     
     formatter = logging.Formatter(
-        '[%(asctime)s] %(levelname)s [%(name)s:%(lineno)d] - %(message)s',
+        '[%(asctime)s] %(levelname)s [%(name)s:%(lineno)d] [%(module)s] - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
@@ -75,9 +73,9 @@ def log_query(cursor, query, params=None):
     
     try:
         formatted_query = cursor.mogrify(query, params).decode('utf-8')
-        db_logger.debug(f"실행 쿼리: {formatted_query}")
+        db_logger.debug(f"[DB] 실행 쿼리: {formatted_query}")
     except Exception as e:
-        db_logger.error(f"쿼리 로깅 실패: {str(e)}")
+        db_logger.error(f"[DB] 쿼리 로깅 실패: {str(e)}")
 
 # 새로운 로깅 시스템
 class AppLogger:
@@ -98,7 +96,7 @@ class AppLogger:
         
         # 포맷터 설정
         self.formatter = logging.Formatter(
-            '[%(asctime)s] %(levelname)s [%(name)s:%(lineno)d] - %(message)s',
+            '[%(asctime)s] %(levelname)s [%(name)s:%(lineno)d] [%(module)s] - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         

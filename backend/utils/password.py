@@ -1,9 +1,11 @@
 """
 비밀번호 해싱 관련 유틸리티 모듈
 """
-import hashlib
-import base64
-import os
+from passlib.context import CryptContext
+from backend.database.exceptions import ValidationError
+
+# 비밀번호 컨텍스트 설정
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def get_password_hash(password: str) -> str:
     """
@@ -14,20 +16,14 @@ def get_password_hash(password: str) -> str:
     
     Returns:
         str: 해시화된 비밀번호
+        
+    Raises:
+        ValidationError: 비밀번호가 유효하지 않은 경우
     """
-    # 솔트 생성
-    salt = os.urandom(16)
-    
-    # 비밀번호와 솔트를 결합하여 해시 생성
-    hashed = hashlib.pbkdf2_hmac(
-        'sha256',
-        password.encode('utf-8'),
-        salt,
-        100000  # 반복 횟수
-    )
-    
-    # 솔트와 해시를 결합하여 저장
-    return base64.b64encode(salt + hashed).decode('utf-8')
+    try:
+        return pwd_context.hash(password)
+    except Exception as e:
+        raise ValidationError(f"비밀번호 해시화 실패: {str(e)}")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
@@ -39,22 +35,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     
     Returns:
         bool: 비밀번호가 일치하면 True, 아니면 False
+        
+    Raises:
+        ValidationError: 비밀번호 검증 중 오류 발생 시
     """
     try:
-        # 저장된 해시에서 솔트와 해시 분리
-        decoded = base64.b64decode(hashed_password)
-        salt = decoded[:16]
-        stored_hash = decoded[16:]
-        
-        # 입력된 비밀번호로 해시 생성
-        new_hash = hashlib.pbkdf2_hmac(
-            'sha256',
-            plain_password.encode('utf-8'),
-            salt,
-            100000
-        )
-        
-        # 해시 비교
-        return stored_hash == new_hash
-    except Exception:
-        return False 
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception as e:
+        raise ValidationError(f"비밀번호 검증 실패: {str(e)}") 

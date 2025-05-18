@@ -6,9 +6,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.routers.user_router import router as user_router
 from backend.routers.item_router import router as item_router
-from backend.routers.review_router import router as review_router
+from backend.routers.item_review_router import router as review_router
+from backend.routers.common_router import router as common_router
 from backend.utils.logger import setup_logger, app_logger, LogType
 from backend.database.init import init_db
+from backend.core.middleware import RequestLoggingMiddleware
+from backend.core.exception_handlers import setup_exception_handlers
 import logging
 
 # 로거 설정
@@ -51,7 +54,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 요청 로깅 미들웨어 추가
+app.add_middleware(RequestLoggingMiddleware)
+
+# 예외 핸들러 설정
+setup_exception_handlers(app)
+
 # 라우터 등록
+app.include_router(common_router)  # 공통 라우터를 먼저 등록
 app.include_router(user_router)
 app.include_router(item_router)
 app.include_router(review_router)

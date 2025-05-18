@@ -1,12 +1,16 @@
 """
-데이터베이스 초기화 모듈
+데이터베이스 초기화 및 연결 관리
 """
 
 import logging
 from pathlib import Path
+from typing import AsyncGenerator
 from backend.database.pool import db_pool
 
 logger = logging.getLogger(__name__)
+
+# 마이그레이션 디렉토리 경로
+migrations_dir = Path(__file__).parent / "migrations"
 
 def read_sql_file(file_path: Path) -> str:
     """SQL 파일을 읽어서 내용을 반환합니다."""
@@ -14,7 +18,7 @@ def read_sql_file(file_path: Path) -> str:
         with open(file_path, 'r', encoding='utf-8') as f:
             return f.read()
     except Exception as e:
-        logger.error(f"SQL 파일 읽기 실패: {file_path}, 오류: {str(e)}")
+        logger.error(f"SQL 파일 읽기 실패: {str(e)}")
         raise
 
 def get_table_list(cur) -> set:
@@ -29,14 +33,7 @@ def get_table_list(cur) -> set:
 def init_db():
     """데이터베이스를 초기화합니다."""
     try:
-        # 스키마 디렉토리 경로
-        schema_dir = Path(__file__).parent / "schemas"
-        migrations_dir = Path(__file__).parent / "migrations"
-        
         # 디렉토리 존재 확인
-        if not schema_dir.exists():
-            logger.error(f"스키마 디렉토리가 존재하지 않습니다: {schema_dir}")
-            return
         if not migrations_dir.exists():
             logger.error(f"마이그레이션 디렉토리가 존재하지 않습니다: {migrations_dir}")
             return
@@ -45,15 +42,6 @@ def init_db():
         with db_pool.get_connection() as conn:
             with conn.cursor() as cur:
                 initial_tables = get_table_list(cur)
-            
-            # 스키마 파일 실행
-        schema_files = list(schema_dir.glob("*.sql"))
-        for schema_file in schema_files:
-                sql_content = read_sql_file(schema_file)
-            with db_pool.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql_content)
-                conn.commit()
         
         # 마이그레이션 파일 실행
         migration_files = sorted(migrations_dir.glob("*.sql"))

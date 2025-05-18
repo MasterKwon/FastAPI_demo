@@ -14,6 +14,18 @@ class DatabaseError(Exception):
         self.params = params
         super().__init__(self.message)
 
+class ValidationError(Exception):
+    """데이터 유효성 검증 관련 예외 클래스"""
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
+class BusinessLogicError(Exception):
+    """비즈니스 로직 관련 예외 클래스"""
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
 def handle_database_error(e: Exception, query: str = None, params: dict = None) -> None:
     """
     데이터베이스 예외를 처리하고 로깅

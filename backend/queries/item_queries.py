@@ -49,6 +49,13 @@ WHERE i.id = $1
 GROUP BY i.id;
 """
 
+# 상품명으로 조회
+SELECT_ITEM_BY_NAME = """
+SELECT id, name, description, price, tax, created_at
+FROM items
+WHERE name = $1
+"""
+
 # 상품 업데이트
 UPDATE_ITEM = """
 UPDATE items
@@ -99,12 +106,5 @@ LIMIT $1 OFFSET $2;
 # 대량 상품 생성
 BULK_INSERT_ITEMS = """
 INSERT INTO items (name, description, price, tax, created_at)
-SELECT * FROM UNNEST(
-    $1::text[],
-    $2::text[],
-    $3::numeric[],
-    $4::numeric[],
-    $5::timestamptz[]
-)
-RETURNING id, name, description, price, tax, created_at;
+VALUES ($1, $2, $3, $4, $5)
 """ 

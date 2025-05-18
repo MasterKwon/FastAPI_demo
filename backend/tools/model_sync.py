@@ -2,6 +2,37 @@
 쿼리와 모델 간의 동기화를 위한 도구
 
 이 스크립트는 SQL 쿼리 파일을 분석하여 해당하는 Pydantic 모델을 자동으로 생성/업데이트합니다.
+
+사용법:
+1. 쿼리 파일 작성 시 다음 형식으로 주석을 추가:
+   - 파라미터: $1: param_name (설명)
+   - 결과 컬럼: column_name: 타입 (설명)
+
+예시:
+```sql
+-- $1: user_id (사용자 ID)
+-- $2: item_id (상품 ID)
+-- id: int (리뷰 ID)
+-- content: str (리뷰 내용)
+-- rating: float (평점)
+-- created_at: datetime (작성일시)
+SELECT * FROM item_reviews WHERE user_id = $1 AND item_id = $2;
+```
+
+2. 스크립트 실행:
+   ```bash
+   python -m backend.tools.model_sync
+   ```
+
+3. 결과:
+   - queries/ 디렉토리의 쿼리 파일을 분석
+   - schemas/ 디렉토리에 해당하는 Pydantic 모델 자동 생성
+   - 기존 모델 파일이 있다면 업데이트
+
+주의사항:
+- 쿼리 파일의 주석 형식을 정확히 지켜야 함
+- 테이블 이름은 쿼리에서 자동으로 추론됨
+- 모델 이름은 테이블 이름을 기반으로 자동 생성됨
 """
 import re
 from pathlib import Path
@@ -117,40 +148,39 @@ class {model_name}Response({model_name}Base):
     
     return code
 
-def sync_model_with_query(query_file: Path, model_file: Path):
-    """쿼리 파일을 기반으로 모델 파일을 동기화합니다."""
+def sync_model_with_query(query_file: Path, schema_file: Path):
+    """쿼리 파일을 기반으로 스키마 파일을 동기화합니다."""
     # 쿼리 파일 파싱
     table_info = parse_query_file(query_file)
     
     # 모델 코드 생성
     model_code = generate_model_code(table_info)
     
-    # 모델 파일 업데이트
-    with open(model_file, 'w', encoding='utf-8') as f:
+    # 스키마 파일 업데이트
+    with open(schema_file, 'w', encoding='utf-8') as f:
         f.write(model_code)
 
 def main():
     """메인 함수"""
-    # 쿼리 파일과 모델 파일 매핑
+    # 쿼리 파일과 스키마 파일 매핑
     file_mappings = {
         'item_queries.py': 'item.py',
-        'item_image_queries.py': 'item_image.py',
         'item_review_queries.py': 'item_review.py',
         'user_queries.py': 'user.py'
     }
     
     base_dir = Path(__file__).parent.parent
     queries_dir = base_dir / 'queries'
-    models_dir = base_dir / 'models'
+    schemas_dir = base_dir / 'schemas'
     
-    for query_file, model_file in file_mappings.items():
+    for query_file, schema_file in file_mappings.items():
         query_path = queries_dir / query_file
-        model_path = models_dir / model_file
+        schema_path = schemas_dir / schema_file
         
         if query_path.exists():
-            print(f"Syncing {query_file} with {model_file}...")
-            sync_model_with_query(query_path, model_path)
-            print(f"Done syncing {model_file}")
+            print(f"Syncing {query_file} with {schema_file}...")
+            sync_model_with_query(query_path, schema_path)
+            print(f"Done syncing {schema_file}")
 
 if __name__ == '__main__':
     main() 

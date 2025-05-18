@@ -1,31 +1,26 @@
 """
-아이템 관련 라우터
+아이템 관련 라우터 모듈
+
+이 모듈은 아이템 관련 API 엔드포인트를 제공합니다.
 """
 from fastapi import APIRouter, HTTPException, Depends, status, Path, Query, UploadFile, File
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import asyncpg
-from backend.database.async_pool import get_async_db
-from backend.utils.logger import log_query, setup_logger, app_logger, LogType
-from backend.database.exceptions import handle_database_error
-from backend.queries.item_queries import (
-    INSERT_ITEM, SELECT_ITEM_BY_ID, SELECT_ITEMS_TEMPLATE,
-    UPDATE_ITEM, DELETE_ITEM, SELECT_ITEM_COUNT
-)
-from backend.models.items import (
-    ItemCreate, ItemResponse, ItemUpdate, ItemsResponse,
-    ItemSortColumn, SortDirection, BulkUploadResponse
-)
-from enum import Enum
-import logging
-from datetime import datetime
-import pandas as pd
-import os
-import time
-import re
+from backend.database.async_pool import get_async_db, async_db_pool
+from backend.utils.logger import setup_logger, app_logger, LogType
+from backend.database.exceptions import DatabaseError, ValidationError, BusinessLogicError
+from backend.schemas.item import ItemCreate, ItemUpdate, ItemResponse, ItemsResponse
 from backend.utils.decorators import log_operation
 from backend.schemas.common import ResponseModel
-from backend.services.item_service import ItemService
+from backend.queries.item_queries import (
+    INSERT_ITEM, SELECT_ITEM_BY_ID, SELECT_ITEM_BY_NAME, SELECT_ITEMS_TEMPLATE,
+    UPDATE_ITEM, DELETE_ITEM, BULK_INSERT_ITEMS
+)
+from datetime import datetime
+import pandas as pd
 from io import BytesIO
+from fastapi.responses import StreamingResponse
+import logging
 
 # 로거 설정
 logger = setup_logger(__name__)
@@ -38,10 +33,7 @@ router = APIRouter(
 
 @router.post("/", response_model=ResponseModel[ItemResponse], status_code=status.HTTP_201_CREATED)
 @log_operation(log_type=LogType.ALL)
-async def create_item(
-    item: ItemCreate,
-    db: asyncpg.Connection = Depends(get_async_db)
-):
+async def create_item(item: ItemCreate):
     """
     새로운 아이템을 생성합니다.
     
@@ -57,38 +49,54 @@ async def create_item(
             - 500: 데이터베이스 오류 발생 시
     """
     try:
-        # 아이템명 중복 체크
-        existing_item = await db.fetchrow(
-            SELECT_ITEM_BY_ID,
-            item.name
-        )
-        if existing_item:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="이미 등록된 아이템명입니다."
+        pool = get_async_db()
+        async with pool.acquire() as conn:
+            # 아이템명 중복 체크
+            existing_item = await async_db_pool.fetchrow(
+                conn,
+                SELECT_ITEM_BY_NAME,
+                item.name
             )
-        
-        # 아이템 정보 저장
-        result = await db.fetchrow(
-            INSERT_ITEM,
-            item.name,
-            item.description,
-            item.price,
-            datetime.now()
-        )
-        
+            if existing_item:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 등록된 아이템명입니다."
+                )
+            
+            # 아이템 생성
+            row = await async_db_pool.fetchrow(
+                conn,
+                INSERT_ITEM,
+                item.name,
+                item.description,
+                item.price,
+                item.tax,
+                datetime.utcnow()
+            )
+            
+            app_logger.log(
+                logging.INFO,
+                f"[ITEM_ROUTER] 아이템 생성 완료: {item.name}",
+                log_type=LogType.ALL
+            )
+            
+            return ResponseModel(data=ItemResponse(**dict(row)), message="Item created successfully", status_code=201)
+            
+    except DatabaseError as e:
         app_logger.log(
-            logging.INFO,
-            f"아이템 생성 성공: {result['id']}",
+            logging.ERROR,
+            f"[ITEM_ROUTER] 아이템 생성 실패: {str(e)}",
             log_type=LogType.ALL
         )
-        
-        return ResponseModel(data=result, message="Item created successfully", status_code=201)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
         
     except Exception as e:
         app_logger.log(
             logging.ERROR,
-            f"아이템 생성 실패: {str(e)}",
+            f"[ITEM_ROUTER] 예상치 못한 오류: {str(e)}",
             log_type=LogType.ALL
         )
         raise HTTPException(
@@ -101,9 +109,7 @@ async def create_item(
 async def read_items(
     skip: int = Query(0, ge=0, description="건너뛸 레코드 수"),
     limit: int = Query(10, ge=1, le=100, description="반환할 최대 레코드 수"),
-    sort_by: str = Query("created_at", description="정렬 기준 컬럼"),
-    sort_direction: str = Query("desc", description="정렬 방향 (asc/desc)"),
-    db: asyncpg.Connection = Depends(get_async_db)
+    search: Optional[str] = None
 ):
     """
     모든 아이템 목록을 조회합니다.
@@ -111,8 +117,7 @@ async def read_items(
     Args:
         skip: 건너뛸 레코드 수 (기본값: 0)
         limit: 반환할 최대 레코드 수 (기본값: 10)
-        sort_by: 정렬 기준 컬럼 (기본값: created_at)
-        sort_direction: 정렬 방향 (기본값: desc)
+        search: 검색어
         
     Returns:
         아이템 목록과 페이지네이션 정보
@@ -121,41 +126,77 @@ async def read_items(
         HTTPException: 500 - 데이터베이스 오류 발생 시
     """
     try:
-        # 아이템 목록 조회
-        query = SELECT_ITEMS_TEMPLATE.format(
-            where_condition="",
-            sort_column=sort_by,
-            sort_direction=sort_direction
+        pool = get_async_db()
+        async with pool.acquire() as conn:
+            # 검색 조건이 있는 경우
+            if search:
+                where_condition = "WHERE name ILIKE $1 OR description ILIKE $1"
+                query = SELECT_ITEMS_TEMPLATE.format(
+                    where_condition=where_condition,
+                    sort_column="created_at",
+                    sort_direction="DESC"
+                )
+                rows = await async_db_pool.fetch(
+                    conn,
+                    query,
+                    f"%{search}%",
+                    limit,
+                    skip
+                )
+            else:
+                query = SELECT_ITEMS_TEMPLATE.format(
+                    where_condition="",
+                    sort_column="created_at",
+                    sort_direction="DESC"
+                )
+                rows = await async_db_pool.fetch(
+                    conn,
+                    query,
+                    limit,
+                    skip
+                )
+            
+            app_logger.log(
+                logging.INFO,
+                f"[ITEM_ROUTER] 아이템 목록 조회 완료: {len(rows)}개",
+                log_type=LogType.ALL
+            )
+            
+            return ResponseModel(
+                data=ItemsResponse(
+                    items=[ItemResponse(**dict(row)) for row in rows],
+                    total=len(rows),
+                    skip=skip,
+                    limit=limit
+                ),
+                message="Items retrieved successfully"
+            )
+            
+    except DatabaseError as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 아이템 목록 조회 실패: {str(e)}",
+            log_type=LogType.ALL
         )
-        items = await db.fetch(query, limit, skip)
-        
-        # 첫 번째 레코드에서 total_count 추출
-        total = items[0]["total_count"] if items else 0
-        
-        # total_count 필드 제거
-        for item in items:
-            item.pop("total_count", None)
-        
-        return ResponseModel(data={
-            "items": items,
-            "total": total,
-            "skip": skip,
-            "limit": limit
-        }, message="Items retrieved successfully")
-        
-    except Exception as e:
-        logger.error(f"아이템 목록 조회 실패: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
-    )
+        )
+        
+    except Exception as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 예상치 못한 오류: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @router.get("/{item_id}", response_model=ResponseModel[ItemResponse])
 @log_operation(log_type=LogType.ALL)
-async def read_item(
-    item_id: int = Path(..., ge=1, description="아이템 ID"),
-    db: asyncpg.Connection = Depends(get_async_db)
-):
+async def read_item(item_id: int = Path(..., ge=1, description="아이템 ID")):
     """
     특정 아이템을 조회합니다.
     
@@ -171,156 +212,141 @@ async def read_item(
             - 500: 데이터베이스 오류 발생 시
     """
     try:
-        item = await db.fetchrow(
-            SELECT_ITEM_BY_ID,
-            item_id
-        )
-        
-        if not item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item not found"
+        pool = get_async_db()
+        async with pool.acquire() as conn:
+            row = await async_db_pool.fetchrow(
+                conn,
+                SELECT_ITEM_BY_ID,
+                item_id
             )
-        
-        return ResponseModel(data=item, message="Item retrieved successfully")
-        
-    except Exception as e:
-        logger.error(f"아이템 조회 실패: {str(e)}")
+            
+            if not row:
+                app_logger.log(
+                    logging.WARNING,
+                    f"[ITEM_ROUTER] 아이템을 찾을 수 없음: {item_id}",
+                    log_type=LogType.ALL
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Item not found"
+                )
+            
+            app_logger.log(
+                logging.INFO,
+                f"[ITEM_ROUTER] 아이템 상세 조회 완료: {item_id}",
+                log_type=LogType.ALL
+            )
+            
+            return ResponseModel(data=ItemResponse(**dict(row)), message="Item retrieved successfully")
+            
+    except DatabaseError as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 아이템 상세 조회 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
-
-@router.get("/search/", response_model=ResponseModel[List[ItemResponse]])
-@log_operation(log_type=LogType.ALL)
-async def search_items(
-    name: Optional[str] = None,
-    description: Optional[str] = None,
-    skip: int = Query(0, ge=0, description="건너뛸 레코드 수"),
-    limit: int = Query(10, ge=1, le=100, description="반환할 최대 레코드 수"),
-    sort_by: str = Query("created_at", description="정렬 기준 컬럼"),
-    sort_direction: str = Query("desc", description="정렬 방향 (asc/desc)"),
-    db: asyncpg.Connection = Depends(get_async_db)
-):
-    """
-    아이템을 검색합니다.
-    
-    Args:
-        name: 검색할 아이템명 (선택)
-        description: 검색할 설명 (선택)
-        skip: 건너뛸 레코드 수 (기본값: 0)
-        limit: 반환할 최대 레코드 수 (기본값: 10)
-        sort_by: 정렬 기준 컬럼 (기본값: created_at)
-        sort_direction: 정렬 방향 (기본값: desc)
-        
-    Returns:
-        검색된 아이템 목록
-        
-    Raises:
-        HTTPException: 500 - 데이터베이스 오류 발생 시
-    """
-    try:
-        # 검색 조건 구성
-        conditions = []
-        if name:
-            conditions.append(f"name ILIKE '%{name}%'")
-        if description:
-            conditions.append(f"description ILIKE '%{description}%'")
-        
-        where_condition = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        
-        # 아이템 검색
-        query = SELECT_ITEMS_TEMPLATE.format(
-            where_condition=where_condition,
-            sort_column=sort_by,
-            sort_direction=sort_direction
-        )
-        items = await db.fetch(query, limit, skip)
-        
-        # total_count 필드 제거
-        for item in items:
-            item.pop("total_count", None)
-        
-        return ResponseModel(data=items, message="Items retrieved successfully")
         
     except Exception as e:
-        logger.error(f"아이템 검색 실패: {str(e)}")
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 예상치 못한 오류: {str(e)}",
+            log_type=LogType.ALL
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
-    )
+        )
 
 @router.put("/{item_id}", response_model=ResponseModel[ItemResponse])
 @log_operation(log_type=LogType.ALL)
 async def update_item(
-    item_id: int,
-    item: ItemUpdate,
-    db: asyncpg.Connection = Depends(get_async_db)
+    item_id: int = Path(..., ge=1, description="아이템 ID"),
+    item: ItemUpdate = None
 ):
     """
-    아이템 정보를 업데이트합니다.
+    아이템 정보를 수정합니다.
     
     Args:
-        item_id: 업데이트할 아이템 ID
-        item: 업데이트할 아이템 정보
+        item_id: 수정할 아이템 ID
+        item: 수정할 아이템 정보
         
     Returns:
-        업데이트된 아이템 정보
+        수정된 아이템 정보
         
     Raises:
         HTTPException:
             - 404: 아이템을 찾을 수 없는 경우
-            - 400: 아이템명이 이미 등록된 경우
             - 500: 데이터베이스 오류 발생 시
     """
     try:
-        # 아이템 존재 여부 확인
-        existing_item = await db.fetchrow(
-            SELECT_ITEM_BY_ID,
-            item_id
-        )
-        if not existing_item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item not found"
+        pool = get_async_db()
+        async with pool.acquire() as conn:
+            # 아이템 존재 확인
+            exists = await async_db_pool.fetchrow(
+                conn,
+                "SELECT EXISTS(SELECT 1 FROM items WHERE id = $1)",
+                item_id
             )
-        
-        # 아이템명 중복 체크
-        if item.name and item.name != existing_item["name"]:
-            name_exists = await db.fetchrow(
-                SELECT_ITEM_BY_ID,
-                item.name
-            )
-            if name_exists:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="이미 등록된 아이템명입니다."
+            
+            if not exists:
+                app_logger.log(
+                    logging.WARNING,
+                    f"[ITEM_ROUTER] 아이템을 찾을 수 없음: {item_id}",
+                    log_type=LogType.ALL
                 )
-        
-        # 아이템 정보 업데이트
-        result = await db.fetchrow(
-            UPDATE_ITEM,
-            item_id,
-            item.name,
-            item.description,
-            item.price
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Item not found"
+                )
+            
+            # 아이템 수정
+            row = await async_db_pool.fetchrow(
+                conn,
+                UPDATE_ITEM,
+                item_id,
+                item.name,
+                item.description,
+                item.price,
+                item.tax
+            )
+            
+            app_logger.log(
+                logging.INFO,
+                f"[ITEM_ROUTER] 아이템 수정 완료: {item_id}",
+                log_type=LogType.ALL
+            )
+            
+            return ResponseModel(data=ItemResponse(**dict(row)), message="Item updated successfully")
+            
+    except DatabaseError as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 아이템 수정 실패: {str(e)}",
+            log_type=LogType.ALL
         )
-        
-        return ResponseModel(data=result, message="Item updated successfully")
-        
-    except Exception as e:
-        logger.error(f"아이템 업데이트 실패: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
-    )
+        )
+        
+    except Exception as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 예상치 못한 오류: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @router.delete("/{item_id}", response_model=ResponseModel)
 @log_operation(log_type=LogType.ALL)
-async def delete_item(
-    item_id: int,
-    db: asyncpg.Connection = Depends(get_async_db)
-):
+async def delete_item(item_id: int = Path(..., ge=1, description="아이템 ID")):
     """
     아이템을 삭제합니다.
     
@@ -336,38 +362,66 @@ async def delete_item(
             - 500: 데이터베이스 오류 발생 시
     """
     try:
-        # 아이템 존재 여부 확인
-        existing_item = await db.fetchrow(
-            SELECT_ITEM_BY_ID,
-            item_id
-        )
-        if not existing_item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item not found"
+        pool = get_async_db()
+        async with pool.acquire() as conn:
+            # 아이템 존재 확인
+            exists = await async_db_pool.fetchrow(
+                conn,
+                "SELECT EXISTS(SELECT 1 FROM items WHERE id = $1)",
+                item_id
             )
-        
-        # 아이템 삭제
-        await db.execute(
-            DELETE_ITEM,
-            item_id
+            
+            if not exists:
+                app_logger.log(
+                    logging.WARNING,
+                    f"[ITEM_ROUTER] 아이템을 찾을 수 없음: {item_id}",
+                    log_type=LogType.ALL
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Item not found"
+                )
+            
+            # 아이템 삭제
+            await async_db_pool.execute_query(
+                conn,
+                DELETE_ITEM,
+                item_id
+            )
+            
+            app_logger.log(
+                logging.INFO,
+                f"[ITEM_ROUTER] 아이템 삭제 완료: {item_id}",
+                log_type=LogType.ALL
+            )
+            
+            return ResponseModel(message="Item deleted successfully")
+            
+    except DatabaseError as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 아이템 삭제 실패: {str(e)}",
+            log_type=LogType.ALL
         )
-        
-        return ResponseModel(message="Item deleted successfully")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
         
     except Exception as e:
-        logger.error(f"아이템 삭제 실패: {str(e)}")
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 예상치 못한 오류: {str(e)}",
+            log_type=LogType.ALL
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
 
-@router.post("/bulk-upload", response_model=ResponseModel[BulkUploadResponse])
+@router.post("/bulk-upload", response_model=ResponseModel[Dict[str, Any]])
 @log_operation(log_type=LogType.ALL)
-async def bulk_upload_items(
-    file: UploadFile = File(...),
-    db: asyncpg.Connection = Depends(get_async_db)
-):
+async def bulk_upload_items(file: UploadFile = File(...)):
     """
     엑셀 파일을 통해 아이템을 대량 등록합니다.
     
@@ -394,56 +448,116 @@ async def bulk_upload_items(
         contents = await file.read()
         df = pd.read_excel(BytesIO(contents))
         
-        # 필수 컬럼 검증
-        required_columns = ['name', 'description', 'price']
-        if not all(col in df.columns for col in required_columns):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Excel file must contain these columns: {', '.join(required_columns)}"
-            )
-        
         # 데이터 검증 및 변환
         success_count = 0
         error_count = 0
         errors = []
         
-        async with db.transaction():
-            for index, row in df.iterrows():
-                try:
-                    # 아이템명 중복 체크
-                    name_exists = await db.fetchrow(
-                        SELECT_ITEM_BY_ID,
-                        row['name']
-                    )
-                    if name_exists:
-                        errors.append(f"Row {index + 2}: Item name already exists")
+        pool = get_async_db()
+        async with pool.acquire() as conn:
+            async with async_db_pool.transaction(conn):
+                for index, row in df.itertuples():
+                    try:
+                        # 아이템 생성 (컬럼 순서 기반 처리)
+                        await async_db_pool.execute_query(
+                            conn,
+                            INSERT_ITEM,
+                            row[1],  # name (첫 번째 컬럼)
+                            row[2],  # description (두 번째 컬럼)
+                            float(row[3]),  # price (세 번째 컬럼)
+                            float(row[4] if len(row) > 4 else 0),  # tax (네 번째 컬럼)
+                            datetime.utcnow()
+                        )
+                        
+                        success_count += 1
+                        
+                    except Exception as e:
+                        errors.append(f"Row {index + 2}: {str(e)}")
                         error_count += 1
-                        continue
-                    
-                    # 아이템 생성
-                    await db.execute(
-                        INSERT_ITEM,
-                        row['name'],
-                        row['description'],
-                        row['price'],
-                        datetime.now()
-                    )
-                    
-                    success_count += 1
-                    
-                except Exception as e:
-                    errors.append(f"Row {index + 2}: {str(e)}")
-                    error_count += 1
         
-        return ResponseModel(data={
-            "success_count": success_count,
-            "error_count": error_count,
-            "errors": errors
-        }, message="Bulk upload completed")
+        app_logger.log(
+            logging.INFO,
+            f"[ITEM_ROUTER] 대량 업로드 완료: 성공 {success_count}개, 실패 {error_count}개",
+            log_type=LogType.ALL
+        )
+        
+        return ResponseModel(
+            data={
+                "success_count": success_count,
+                "error_count": error_count,
+                "errors": errors
+            },
+            message="Bulk upload completed"
+        )
         
     except Exception as e:
-        logger.error(f"대량 업로드 실패: {str(e)}")
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 대량 업로드 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
-    ) 
+        )
+
+@router.get("/download-template")
+@log_operation(log_type=LogType.ALL)
+async def download_template():
+    """
+    아이템 대량 등록을 위한 엑셀 템플릿을 다운로드합니다.
+    
+    Returns:
+        엑셀 템플릿 파일
+        
+    Raises:
+        HTTPException: 500 - 파일 생성 실패 시
+    """
+    try:
+        # 템플릿 데이터 생성 (컬럼 순서 기반)
+        data = [
+            ['아이템명1', '아이템 설명1', 1000, 100],  # 첫 번째 행
+            ['아이템명2', '아이템 설명2', 2000, 200]   # 두 번째 행
+        ]
+        df = pd.DataFrame(data, columns=['name', 'description', 'price', 'tax'])
+        
+        # 엑셀 파일 생성
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Template')
+            
+            # 워크시트 가져오기
+            worksheet = writer.sheets['Template']
+            
+            # 컬럼 너비 조정
+            worksheet.set_column('A:A', 20)  # name
+            worksheet.set_column('B:B', 40)  # description
+            worksheet.set_column('C:C', 15)  # price
+            worksheet.set_column('D:D', 15)  # tax
+        
+        output.seek(0)
+        
+        app_logger.log(
+            logging.INFO,
+            "[ITEM_ROUTER] 템플릿 다운로드 완료",
+            log_type=LogType.ALL
+        )
+        
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                'Content-Disposition': 'attachment; filename=item_template.xlsx'
+            }
+        )
+        
+    except Exception as e:
+        app_logger.log(
+            logging.ERROR,
+            f"[ITEM_ROUTER] 템플릿 다운로드 실패: {str(e)}",
+            log_type=LogType.ALL
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        ) 

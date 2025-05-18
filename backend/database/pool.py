@@ -3,7 +3,7 @@
 """
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
-from backend.config import settings
+from backend.core.config import settings
 from fastapi import Depends
 import psycopg2
 

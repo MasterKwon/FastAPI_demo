@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 import openai
 from pydantic import BaseModel
-from backend.config import settings
+from backend.core.config import settings
 
 client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
 
